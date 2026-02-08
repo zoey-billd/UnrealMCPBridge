@@ -56,42 +56,39 @@ def send_command(command, params=None):
     try:
         # Send the message
         socket_client.sendall(json.dumps(message).encode('utf-8'))
-        
-        # Receive the response
-        response = None
-        while True:
-            chunk = socket_client.recv(16384)  # 16KB buffer
-            if chunk:
 
-                # Check if we've received a complete JSON object
+        # Receive the response - accumulate chunks until valid JSON
+        socket_client.settimeout(60.0)
+        buffer = b''
+        try:
+            while True:
+                chunk = socket_client.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk
+
+                # Try to parse accumulated buffer as JSON
                 try:
-                    
-                    # decode and extract dict object
-                    decoded = chunk.decode('utf-8', 'replace')
+                    decoded = buffer.decode('utf-8', 'replace')
                     stripped = decoded.strip('\'"\n\r')
                     replaced = stripped.replace('\\\'', '')
                     response = json.loads(replaced)
-                    
-                    # If we get here, it parsed successfully
-                    #logger.info(f"Received complete response ({len(chunk)} bytes)")
-                    #print(f"... Received complete response ({len(chunk)}) bytes")
-                    #break
-                except json.JSONDecodeError as je:
-                    # Incomplete JSON, continue receiving or break
-                    print(f"... json decode error")
-                    msg = str(je)
-                    if replaced:
-                        msg = replaced
-                    elif stripped:
-                        msg = stripped
-                    elif decoded:
-                        msg = decoded
-                    response = {"status": "error", "message": f"Json error: {msg}"}
+                    socket_client.settimeout(None)
+                    return response
+                except json.JSONDecodeError:
+                    continue
+        except socket.timeout:
+            socket_client.settimeout(None)
+            if buffer:
+                decoded = buffer.decode('utf-8', 'replace')
+                return {"status": "error", "message": f"Timeout - partial response: {decoded[:500]}"}
+            return {"status": "error", "message": "Timeout waiting for response from Unreal Engine"}
 
-                break
-        
-        # Send response
-        return response
+        socket_client.settimeout(None)
+        if buffer:
+            decoded = buffer.decode('utf-8', 'replace')
+            return {"status": "error", "message": f"Connection closed - partial: {decoded[:500]}"}
+        return {"status": "error", "message": "Connection closed by Unreal Engine"}
 
     except Exception as e:
         print(f"Error sending command to Unreal: {e}")

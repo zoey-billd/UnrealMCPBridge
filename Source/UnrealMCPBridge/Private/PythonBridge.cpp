@@ -68,7 +68,7 @@ FString FPythonBridge::ExecuteCommand(const FString& Command, TSharedPtr<FJsonOb
 {
     // Build the Python command to call the appropriate method
     FString PythonDict = ParamsToPythonDict(Params);
-    FString PythonScript = FString::Printf(TEXT("mcp_bridge.%s(%s)"), *Command, *PythonDict);
+    FString PythonScript = FString::Printf(TEXT("print(mcp_bridge.%s(%s))"), *Command, *PythonDict);
 
     // Execute the Python script and return the result
     return ExecutePythonScript(PythonScript);
