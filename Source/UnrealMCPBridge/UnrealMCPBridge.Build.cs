@@ -48,9 +48,14 @@ public class UnrealMCPBridge : ModuleRules
 				"Slate",
 				"SlateCore",
 				"PythonScriptPlugin",
-                "Json", 
-				"JsonUtilities", 
-				"Settings"
+                "Json",
+				"JsonUtilities",
+				"Settings",
+				"BlueprintGraph",
+				"KismetCompiler",
+				"Kismet",
+				"Niagara",
+				"NiagaraEditor"
             }
 			);
 		
