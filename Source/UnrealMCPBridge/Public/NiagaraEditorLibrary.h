@@ -358,6 +358,106 @@ public:
 		float CurveTension);
 
 	// =========================================================================
+	// EMITTER PROPERTIES
+	// =========================================================================
+
+	/** Set the simulation target for an emitter (CPU or GPU).
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param SimTarget "CPUSim" or "GPUComputeSim"
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Emitter")
+	static bool SetEmitterSimTarget(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& SimTarget);
+
+	/** Set fixed bounding box for an emitter. Also sets CalculateBoundsMode to Fixed.
+	 * Required for GPU simulation.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param MinX/MinY/MinZ Minimum bounds corner
+	 * @param MaxX/MaxY/MaxZ Maximum bounds corner
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Emitter")
+	static bool SetEmitterFixedBounds(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		float MinX, float MinY, float MinZ,
+		float MaxX, float MaxY, float MaxZ);
+
+	// =========================================================================
+	// CURVE DATA INTERFACES
+	// =========================================================================
+
+	/** Set keys on a float curve data interface (e.g., ScaleSpriteSize uniform curve).
+	 * Requires a prior compile so CachedDefaultDataInterfaces is populated.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param ModuleNodeName Module node name containing the curve
+	 * @param ParameterName Parameter name of the curve input
+	 * @param Times Comma-separated time values (e.g., "0.0,0.5,1.0")
+	 * @param Values Comma-separated float values (e.g., "0.0,1.0,0.0")
+	 * @return true if curve keys were set
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Curves")
+	static bool SetFloatCurveKeys(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& ModuleNodeName,
+		const FString& ParameterName,
+		const FString& Times,
+		const FString& Values);
+
+	/** Set keys on a color curve data interface (e.g., ScaleColor gradient).
+	 * Requires a prior compile so CachedDefaultDataInterfaces is populated.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param ModuleNodeName Module node name containing the curve
+	 * @param ParameterName Parameter name of the curve input
+	 * @param Times Comma-separated time values
+	 * @param RedValues Comma-separated red channel values (0-1)
+	 * @param GreenValues Comma-separated green channel values (0-1)
+	 * @param BlueValues Comma-separated blue channel values (0-1)
+	 * @param AlphaValues Comma-separated alpha channel values (0-1)
+	 * @return true if curve keys were set
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Curves")
+	static bool SetColorCurveKeys(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& ModuleNodeName,
+		const FString& ParameterName,
+		const FString& Times,
+		const FString& RedValues,
+		const FString& GreenValues,
+		const FString& BlueValues,
+		const FString& AlphaValues);
+
+	/** Set keys on a Vector2D curve data interface (e.g., non-uniform sprite size curve).
+	 * Requires a prior compile so CachedDefaultDataInterfaces is populated.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param ModuleNodeName Module node name containing the curve
+	 * @param ParameterName Parameter name of the curve input
+	 * @param Times Comma-separated time values
+	 * @param XValues Comma-separated X channel values
+	 * @param YValues Comma-separated Y channel values
+	 * @return true if curve keys were set
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Curves")
+	static bool SetVector2DCurveKeys(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& ModuleNodeName,
+		const FString& ParameterName,
+		const FString& Times,
+		const FString& XValues,
+		const FString& YValues);
+
+	// =========================================================================
 	// INTROSPECTION
 	// =========================================================================
 
@@ -408,6 +508,17 @@ public:
 		UNiagaraSystem* System,
 		int32 EmitterIndex,
 		const FString& ModuleNodeName);
+
+	/** List all cached data interface objects in an emitter's compiled scripts.
+	 * Useful for debugging curve DI discovery. Requires a prior compile.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @return Array of strings in format "ScriptStage|Name|CompileName|Class"
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Introspection")
+	static TArray<FString> ListCachedDataInterfaces(
+		UNiagaraSystem* System,
+		int32 EmitterIndex);
 
 private:
 	static bool GetEmitterAndData(

@@ -17,6 +17,9 @@
 #include "NiagaraEmitterEditorData.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraRibbonRendererProperties.h"
+#include "NiagaraDataInterfaceCurve.h"
+#include "NiagaraDataInterfaceColorCurve.h"
+#include "NiagaraDataInterfaceVector2DCurve.h"
 
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
@@ -132,6 +135,156 @@ static UNiagaraScript* FindTargetScriptForModule(
 	if (Usage == ENiagaraScriptUsage::ParticleUpdateScript)
 	{
 		return EmitterData->UpdateScriptProps.Script;
+	}
+
+	return nullptr;
+}
+
+/**
+ * Parses a comma-separated string of float values into an array.
+ */
+static bool ParseCommaSeparatedFloats(const FString& Input, TArray<float>& OutValues)
+{
+	TArray<FString> Parts;
+	Input.ParseIntoArray(Parts, TEXT(","), true);
+	for (const FString& Part : Parts)
+	{
+		OutValues.Add(FCString::Atof(*Part.TrimStartAndEnd()));
+	}
+	return OutValues.Num() > 0;
+}
+
+/**
+ * Finds a data interface of a specific type in an emitter's compiled scripts.
+ * Searches CachedDefaultDataInterfaces by module node name and parameter name.
+ * Requires a prior compile to populate the cache.
+ */
+static UNiagaraDataInterface* FindCurveDataInterface(
+	FVersionedNiagaraEmitterData* EmitterData,
+	UNiagaraNodeFunctionCall* ModuleNode,
+	const FString& ParameterName,
+	UClass* ExpectedDIClass)
+{
+	FString ModuleNodeName = ModuleNode->GetName();
+
+	// Get the module's script/function name (e.g., "ScaleSpriteSize", "ScaleColor")
+	// DI names in the cache use this name, NOT the graph node name
+	FString ModuleScriptName;
+	UNiagaraGraph* CalledGraph = ModuleNode->GetCalledGraph();
+	if (CalledGraph)
+	{
+		UObject* Outer = CalledGraph->GetOuter();
+		if (Outer)
+		{
+			ModuleScriptName = Outer->GetName();
+		}
+	}
+
+	// Build list of names to search for
+	TArray<FString> SearchNames;
+	if (!ModuleScriptName.IsEmpty())
+	{
+		SearchNames.Add(ModuleScriptName);
+	}
+	SearchNames.Add(ModuleNodeName);
+
+	UNiagaraScript* Scripts[] = {
+		EmitterData->EmitterSpawnScriptProps.Script,
+		EmitterData->EmitterUpdateScriptProps.Script,
+		EmitterData->SpawnScriptProps.Script,
+		EmitterData->UpdateScriptProps.Script
+	};
+
+	bool bAnyCached = false;
+
+#if WITH_EDITORONLY_DATA
+	// Collect all DI infos from all scripts
+	TArray<const FNiagaraScriptDataInterfaceInfo*> AllDIs;
+	for (UNiagaraScript* Script : Scripts)
+	{
+		if (!Script) continue;
+		const TArray<FNiagaraScriptDataInterfaceInfo>& DIInfos = Script->GetCachedDefaultDataInterfaces();
+		if (DIInfos.Num() > 0) bAnyCached = true;
+
+		for (const FNiagaraScriptDataInterfaceInfo& Info : DIInfos)
+		{
+			if (Info.DataInterface && Info.DataInterface->IsA(ExpectedDIClass))
+			{
+				AllDIs.Add(&Info);
+			}
+		}
+	}
+
+	if (AllDIs.Num() == 0 && bAnyCached)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No data interfaces of type %s found in cached DIs."), *ExpectedDIClass->GetName());
+		return nullptr;
+	}
+
+	// Pass 1: Match by module name AND parameter name (most specific)
+	for (const FNiagaraScriptDataInterfaceInfo* Info : AllDIs)
+	{
+		FString N = Info->Name.ToString();
+		FString CN = Info->CompileName.ToString();
+
+		for (const FString& SearchName : SearchNames)
+		{
+			if ((N.Contains(SearchName) || CN.Contains(SearchName)) &&
+				(N.Contains(ParameterName) || CN.Contains(ParameterName)))
+			{
+				return Info->DataInterface;
+			}
+		}
+	}
+
+	// Pass 2: Match by module name only
+	for (const FNiagaraScriptDataInterfaceInfo* Info : AllDIs)
+	{
+		FString N = Info->Name.ToString();
+		FString CN = Info->CompileName.ToString();
+
+		for (const FString& SearchName : SearchNames)
+		{
+			if (N.Contains(SearchName) || CN.Contains(SearchName))
+			{
+				return Info->DataInterface;
+			}
+		}
+	}
+
+	// Pass 3: Match by parameter name only
+	for (const FNiagaraScriptDataInterfaceInfo* Info : AllDIs)
+	{
+		FString N = Info->Name.ToString();
+		FString CN = Info->CompileName.ToString();
+
+		if (N.Contains(ParameterName) || CN.Contains(ParameterName))
+		{
+			return Info->DataInterface;
+		}
+	}
+
+	// Pass 4: If only one DI of the expected type exists, use it
+	if (AllDIs.Num() == 1)
+	{
+		return AllDIs[0]->DataInterface;
+	}
+
+	if (AllDIs.Num() > 1)
+	{
+		// Log all DI names to help debugging
+		UE_LOG(LogTemp, Warning, TEXT("[NiagaraEditorLib] Found %d data interfaces of type %s but couldn't match. Searched for module '%s' (script '%s'), param '%s'. Available DIs:"),
+			AllDIs.Num(), *ExpectedDIClass->GetName(), *ModuleNodeName, *ModuleScriptName, *ParameterName);
+		for (const FNiagaraScriptDataInterfaceInfo* Info : AllDIs)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("  - Name='%s' CompileName='%s'"), *Info->Name.ToString(), *Info->CompileName.ToString());
+		}
+	}
+#endif
+
+	if (!bAnyCached)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No cached data interfaces found. Compile the system first before setting curve keys."));
 	}
 
 	return nullptr;
@@ -1223,6 +1376,263 @@ bool UNiagaraEditorLibrary::SetRibbonRendererTessellation(
 }
 
 // =============================================================================
+// EMITTER PROPERTIES
+// =============================================================================
+
+bool UNiagaraEditorLibrary::SetEmitterSimTarget(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& SimTarget)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	if (SimTarget.Equals(TEXT("CPUSim"), ESearchCase::IgnoreCase))
+	{
+		EmitterData->SimTarget = ENiagaraSimTarget::CPUSim;
+	}
+	else if (SimTarget.Equals(TEXT("GPUComputeSim"), ESearchCase::IgnoreCase))
+	{
+		EmitterData->SimTarget = ENiagaraSimTarget::GPUComputeSim;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] Unknown SimTarget: %s. Use \"CPUSim\" or \"GPUComputeSim\"."), *SimTarget);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set emitter %d SimTarget to %s"), EmitterIndex, *SimTarget);
+	return true;
+}
+
+bool UNiagaraEditorLibrary::SetEmitterFixedBounds(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	float MinX, float MinY, float MinZ,
+	float MaxX, float MaxY, float MaxZ)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	EmitterData->CalculateBoundsMode = ENiagaraEmitterCalculateBoundMode::Fixed;
+	EmitterData->FixedBounds = FBox(FVector(MinX, MinY, MinZ), FVector(MaxX, MaxY, MaxZ));
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set emitter %d FixedBounds: (%f,%f,%f) to (%f,%f,%f)"),
+		EmitterIndex, MinX, MinY, MinZ, MaxX, MaxY, MaxZ);
+	return true;
+}
+
+// =============================================================================
+// CURVE DATA INTERFACES
+// =============================================================================
+
+bool UNiagaraEditorLibrary::SetFloatCurveKeys(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& ModuleNodeName,
+	const FString& ParameterName,
+	const FString& Times,
+	const FString& Values)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UNiagaraNodeFunctionCall* ModuleNode = FindModuleNode(EmitterData, ModuleNodeName);
+	if (!ModuleNode)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetFloatCurveKeys: Module '%s' not found"), *ModuleNodeName);
+		return false;
+	}
+
+	TArray<float> TimeValues, FloatValues;
+	if (!ParseCommaSeparatedFloats(Times, TimeValues) || !ParseCommaSeparatedFloats(Values, FloatValues))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetFloatCurveKeys: Failed to parse Times or Values strings"));
+		return false;
+	}
+
+	if (TimeValues.Num() != FloatValues.Num())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetFloatCurveKeys: Times (%d) and Values (%d) must have same count"),
+			TimeValues.Num(), FloatValues.Num());
+		return false;
+	}
+
+	UNiagaraDataInterface* DI = FindCurveDataInterface(EmitterData, ModuleNode, ParameterName, UNiagaraDataInterfaceCurve::StaticClass());
+	if (!DI)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetFloatCurveKeys: Could not find float curve DI for module '%s', param '%s'"),
+			*ModuleNodeName, *ParameterName);
+		return false;
+	}
+
+	UNiagaraDataInterfaceCurve* CurveDI = Cast<UNiagaraDataInterfaceCurve>(DI);
+	CurveDI->Curve.Reset();
+	for (int32 i = 0; i < TimeValues.Num(); i++)
+	{
+		CurveDI->Curve.AddKey(TimeValues[i], FloatValues[i]);
+	}
+
+#if WITH_EDITORONLY_DATA
+	CurveDI->UpdateLUT();
+#endif
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set %d keys on float curve %s.%s"), TimeValues.Num(), *ModuleNodeName, *ParameterName);
+	return true;
+}
+
+bool UNiagaraEditorLibrary::SetColorCurveKeys(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& ModuleNodeName,
+	const FString& ParameterName,
+	const FString& Times,
+	const FString& RedValues,
+	const FString& GreenValues,
+	const FString& BlueValues,
+	const FString& AlphaValues)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UNiagaraNodeFunctionCall* ModuleNode = FindModuleNode(EmitterData, ModuleNodeName);
+	if (!ModuleNode)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetColorCurveKeys: Module '%s' not found"), *ModuleNodeName);
+		return false;
+	}
+
+	TArray<float> TimeValues, RValues, GValues, BValues, AValues;
+	if (!ParseCommaSeparatedFloats(Times, TimeValues) ||
+		!ParseCommaSeparatedFloats(RedValues, RValues) ||
+		!ParseCommaSeparatedFloats(GreenValues, GValues) ||
+		!ParseCommaSeparatedFloats(BlueValues, BValues) ||
+		!ParseCommaSeparatedFloats(AlphaValues, AValues))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetColorCurveKeys: Failed to parse one or more value strings"));
+		return false;
+	}
+
+	int32 KeyCount = TimeValues.Num();
+	if (RValues.Num() != KeyCount || GValues.Num() != KeyCount ||
+		BValues.Num() != KeyCount || AValues.Num() != KeyCount)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetColorCurveKeys: All arrays must have same count as Times (%d)"), KeyCount);
+		return false;
+	}
+
+	UNiagaraDataInterface* DI = FindCurveDataInterface(EmitterData, ModuleNode, ParameterName, UNiagaraDataInterfaceColorCurve::StaticClass());
+	if (!DI)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetColorCurveKeys: Could not find color curve DI for module '%s', param '%s'"),
+			*ModuleNodeName, *ParameterName);
+		return false;
+	}
+
+	UNiagaraDataInterfaceColorCurve* ColorCurveDI = Cast<UNiagaraDataInterfaceColorCurve>(DI);
+	ColorCurveDI->RedCurve.Reset();
+	ColorCurveDI->GreenCurve.Reset();
+	ColorCurveDI->BlueCurve.Reset();
+	ColorCurveDI->AlphaCurve.Reset();
+
+	for (int32 i = 0; i < KeyCount; i++)
+	{
+		ColorCurveDI->RedCurve.AddKey(TimeValues[i], RValues[i]);
+		ColorCurveDI->GreenCurve.AddKey(TimeValues[i], GValues[i]);
+		ColorCurveDI->BlueCurve.AddKey(TimeValues[i], BValues[i]);
+		ColorCurveDI->AlphaCurve.AddKey(TimeValues[i], AValues[i]);
+	}
+
+#if WITH_EDITORONLY_DATA
+	ColorCurveDI->UpdateLUT();
+#endif
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set %d keys on color curve %s.%s"), KeyCount, *ModuleNodeName, *ParameterName);
+	return true;
+}
+
+bool UNiagaraEditorLibrary::SetVector2DCurveKeys(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& ModuleNodeName,
+	const FString& ParameterName,
+	const FString& Times,
+	const FString& XValues,
+	const FString& YValues)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UNiagaraNodeFunctionCall* ModuleNode = FindModuleNode(EmitterData, ModuleNodeName);
+	if (!ModuleNode)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetVector2DCurveKeys: Module '%s' not found"), *ModuleNodeName);
+		return false;
+	}
+
+	TArray<float> TimeValues, XVals, YVals;
+	if (!ParseCommaSeparatedFloats(Times, TimeValues) ||
+		!ParseCommaSeparatedFloats(XValues, XVals) ||
+		!ParseCommaSeparatedFloats(YValues, YVals))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetVector2DCurveKeys: Failed to parse one or more value strings"));
+		return false;
+	}
+
+	int32 KeyCount = TimeValues.Num();
+	if (XVals.Num() != KeyCount || YVals.Num() != KeyCount)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetVector2DCurveKeys: All arrays must have same count as Times (%d)"), KeyCount);
+		return false;
+	}
+
+	UNiagaraDataInterface* DI = FindCurveDataInterface(EmitterData, ModuleNode, ParameterName, UNiagaraDataInterfaceVector2DCurve::StaticClass());
+	if (!DI)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] SetVector2DCurveKeys: Could not find Vector2D curve DI for module '%s', param '%s'"),
+			*ModuleNodeName, *ParameterName);
+		return false;
+	}
+
+	UNiagaraDataInterfaceVector2DCurve* Vec2CurveDI = Cast<UNiagaraDataInterfaceVector2DCurve>(DI);
+	Vec2CurveDI->XCurve.Reset();
+	Vec2CurveDI->YCurve.Reset();
+
+	for (int32 i = 0; i < KeyCount; i++)
+	{
+		Vec2CurveDI->XCurve.AddKey(TimeValues[i], XVals[i]);
+		Vec2CurveDI->YCurve.AddKey(TimeValues[i], YVals[i]);
+	}
+
+#if WITH_EDITORONLY_DATA
+	Vec2CurveDI->UpdateLUT();
+#endif
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set %d keys on Vector2D curve %s.%s"), KeyCount, *ModuleNodeName, *ParameterName);
+	return true;
+}
+
+// =============================================================================
 // INTROSPECTION
 // =============================================================================
 
@@ -1462,6 +1872,52 @@ TArray<FString> UNiagaraEditorLibrary::GetModuleInputs(
 			}
 		}
 	}
+
+	return Result;
+}
+
+TArray<FString> UNiagaraEditorLibrary::ListCachedDataInterfaces(
+	UNiagaraSystem* System,
+	int32 EmitterIndex)
+{
+	TArray<FString> Result;
+
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return Result;
+	}
+
+	struct FScriptInfo
+	{
+		const TCHAR* Name;
+		UNiagaraScript* Script;
+	};
+
+	TArray<FScriptInfo> Scripts;
+	Scripts.Add({TEXT("EmitterSpawn"), EmitterData->EmitterSpawnScriptProps.Script});
+	Scripts.Add({TEXT("EmitterUpdate"), EmitterData->EmitterUpdateScriptProps.Script});
+	Scripts.Add({TEXT("ParticleSpawn"), EmitterData->SpawnScriptProps.Script});
+	Scripts.Add({TEXT("ParticleUpdate"), EmitterData->UpdateScriptProps.Script});
+
+#if WITH_EDITORONLY_DATA
+	for (const FScriptInfo& Info : Scripts)
+	{
+		if (!Info.Script) continue;
+		const TArray<FNiagaraScriptDataInterfaceInfo>& DIInfos = Info.Script->GetCachedDefaultDataInterfaces();
+
+		for (const FNiagaraScriptDataInterfaceInfo& DIInfo : DIInfos)
+		{
+			FString ClassName = DIInfo.DataInterface ? DIInfo.DataInterface->GetClass()->GetName() : TEXT("null");
+			Result.Add(FString::Printf(TEXT("%s|%s|%s|%s"),
+				Info.Name,
+				*DIInfo.Name.ToString(),
+				*DIInfo.CompileName.ToString(),
+				*ClassName));
+		}
+	}
+#endif
 
 	return Result;
 }
