@@ -380,10 +380,64 @@ def run_blueprint_function(blueprint_name: str, function_name: str, arguments: s
         return f"Error: {result.get('message', 'Unknown error')}"
 
 @mcp.tool()
+def take_screenshot() -> str:
+    """Take a screenshot of the active editor viewport. Returns the file path of the saved PNG image."""
+    result = send_command("take_screenshot")
+    if result.get("status") == "success":
+        return result.get("result", "Screenshot taken but path unknown")
+    else:
+        return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def set_viewport_camera(location_x: float = 0, location_y: float = 0, location_z: float = 0, rotation_pitch: float = 0, rotation_yaw: float = 0, rotation_roll: float = 0) -> str:
+    """
+    Move the editor viewport camera to a specific location and rotation.
+
+    Args:
+        location_x: X coordinate
+        location_y: Y coordinate
+        location_z: Z coordinate
+        rotation_pitch: Look up (+) / down (-) in degrees
+        rotation_yaw: Compass heading in degrees
+        rotation_roll: Tilt in degrees
+    """
+    result = send_command("set_viewport_camera", {
+        "location_x": location_x,
+        "location_y": location_y,
+        "location_z": location_z,
+        "rotation_pitch": rotation_pitch,
+        "rotation_yaw": rotation_yaw,
+        "rotation_roll": rotation_roll
+    })
+    if result.get("status") == "success":
+        return result.get("result", "Camera moved successfully")
+    else:
+        return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def focus_viewport_on_actor(actor_name: str, distance: float = 0) -> str:
+    """
+    Focus the editor viewport on a named actor. Positions camera at a 45-degree overhead angle.
+    Distance is auto-calculated from actor bounds (minimum 1000 units) or can be overridden.
+
+    Args:
+        actor_name: Name of the actor to focus on
+        distance: Camera distance from actor (0 = auto-calculate from bounds)
+    """
+    result = send_command("focus_viewport_on_actor", {
+        "actor_name": actor_name,
+        "distance": distance
+    })
+    if result.get("status") == "success":
+        return result.get("result", "Viewport focused successfully")
+    else:
+        return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
 def execute_python(code: str) -> str:
     """
     Execute arbitrary Python code in Unreal Engine.
-    
+
     Args:
         code: Python code to execute
     """

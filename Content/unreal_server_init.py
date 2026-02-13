@@ -1251,6 +1251,95 @@ class MCPUnrealBridge:
         return json.dumps({"status": "success", "result": "Context reset"})
 
     @staticmethod
+    def take_screenshot():
+        """Take a screenshot of the active editor viewport and save as PNG."""
+        try:
+            import os
+
+            # Determine output path
+            saved_dir = unreal.Paths.project_saved_dir()
+            screenshot_dir = os.path.join(saved_dir, "Screenshots")
+            filepath = os.path.join(screenshot_dir, "mcp_viewport.png")
+            # Normalize to forward slashes for Unreal
+            filepath = filepath.replace("\\", "/")
+
+            # Capture viewport via C++ BlueprintFunctionLibrary (synchronous ReadPixels)
+            result_path = unreal.ViewportCaptureLibrary.capture_viewport(filepath)
+
+            if result_path.startswith("Error:"):
+                return json.dumps({"status": "error", "message": result_path})
+
+            # Convert to OS-native path for file reading
+            native_path = result_path.replace("/", os.sep)
+            return json.dumps({"status": "success", "result": native_path})
+
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def set_viewport_camera(location_x=0, location_y=0, location_z=0, rotation_pitch=0, rotation_yaw=0, rotation_roll=0):
+        """Move the editor viewport camera to a specific location and rotation.
+        Pitch: look up (+) / down (-). Yaw: compass heading. Roll: tilt."""
+        try:
+            editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            location = unreal.Vector(float(location_x), float(location_y), float(location_z))
+            rotation = unreal.Rotator(float(rotation_roll), float(rotation_pitch), float(rotation_yaw))
+            editor_subsystem.set_level_viewport_camera_info(location, rotation)
+            return json.dumps({
+                "status": "success",
+                "result": f"Viewport camera set to location ({location_x}, {location_y}, {location_z}), rotation (pitch={rotation_pitch}, yaw={rotation_yaw}, roll={rotation_roll})"
+            })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def focus_viewport_on_actor(actor_name, distance=0):
+        """Focus the editor viewport on a named actor.
+        Positions camera at (-d, -d, +d) offset with -45 pitch and 45 yaw for a clear overhead view.
+        Distance is auto-calculated from actor bounds (minimum 1000 units) or can be overridden."""
+        try:
+            actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            actors = actor_subsystem.get_all_level_actors()
+
+            target_actor = None
+            for actor in actors:
+                if actor.get_name() == actor_name:
+                    target_actor = actor
+                    break
+
+            if not target_actor:
+                return json.dumps({"status": "error", "message": f"Actor '{actor_name}' not found"})
+
+            # Select the actor
+            actor_subsystem.set_selected_level_actors([target_actor])
+
+            # Get actor location and bounds
+            origin, extent = target_actor.get_actor_bounds(False)
+
+            # Auto-calculate distance from bounds, minimum 1000 units
+            d = float(distance)
+            if d <= 0:
+                max_extent = max(extent.x, extent.y, extent.z, 100.0)
+                d = max(max_extent * 5.0, 1000.0)
+
+            # Position camera at (-d, -d, +d) offset from actor center
+            cam_x = origin.x - d
+            cam_y = origin.y - d
+            cam_z = origin.z + d
+
+            location = unreal.Vector(cam_x, cam_y, cam_z)
+            rotation = unreal.Rotator(0, -45, 45)  # roll=0, pitch=-45, yaw=45
+            editor_subsystem.set_level_viewport_camera_info(location, rotation)
+
+            return json.dumps({
+                "status": "success",
+                "result": f"Viewport focused on '{actor_name}' at ({origin.x:.0f}, {origin.y:.0f}, {origin.z:.0f}), camera distance {d:.0f}"
+            })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
     def execute_python(code):
         """Execute arbitrary Python code in Unreal Engine.
         Variables and classes defined persist across calls until reset_context() is called."""

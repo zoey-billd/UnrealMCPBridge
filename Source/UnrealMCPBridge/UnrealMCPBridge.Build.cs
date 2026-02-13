@@ -55,7 +55,9 @@ public class UnrealMCPBridge : ModuleRules
 				"KismetCompiler",
 				"Kismet",
 				"Niagara",
-				"NiagaraEditor"
+				"NiagaraEditor",
+				"ImageWrapper",
+				"LevelEditor"
             }
 			);
 		
