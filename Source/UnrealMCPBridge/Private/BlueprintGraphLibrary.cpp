@@ -24,6 +24,13 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
 
+// UE 5.5 PerformAction takes FVector2D; UE 5.6+ uses FVector2f
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
+using FGraphNodePosition = FVector2f;
+#else
+using FGraphNodePosition = FVector2D;
+#endif
+
 // =============================================================================
 // PRIVATE HELPERS
 // =============================================================================
@@ -206,7 +213,8 @@ FString UBlueprintGraphLibrary::AddEventNode(
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = EventNode;
-	Action.PerformAction(EventGraph, nullptr, FVector2f(PosX, PosY));
+	UEdGraphPin* NullPin = nullptr;
+	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -301,7 +309,8 @@ FString UBlueprintGraphLibrary::AddVariableGetNode(
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
-	Action.PerformAction(EventGraph, nullptr, FVector2f(PosX, PosY));
+	UEdGraphPin* NullPin = nullptr;
+	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -333,7 +342,8 @@ FString UBlueprintGraphLibrary::AddVariableSetNode(
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
-	Action.PerformAction(EventGraph, nullptr, FVector2f(PosX, PosY));
+	UEdGraphPin* NullPin = nullptr;
+	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -363,7 +373,8 @@ FString UBlueprintGraphLibrary::AddBranchNode(
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
-	Action.PerformAction(EventGraph, nullptr, FVector2f(PosX, PosY));
+	UEdGraphPin* NullPin = nullptr;
+	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
@@ -395,7 +406,8 @@ FString UBlueprintGraphLibrary::AddCustomEventNode(
 
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
-	Action.PerformAction(EventGraph, nullptr, FVector2f(PosX, PosY));
+	UEdGraphPin* NullPin = nullptr;
+	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
