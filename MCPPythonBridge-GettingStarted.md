@@ -19,7 +19,7 @@ This is a plugin for Unreal Engine (UE) that creates a server implementation of 
 
 1. Create a new Unreal Engine C++ project.
 2. Under the project root directory, find the `Plugins` folder.
-3. Clone the UnrealMCPBridge [repo](https://github.com/odabr/UnrealMCPBridge) into the `Plugins` folder so that there is a new containing folder with all the project contents underneath.
+3. Clone the UnrealMCPBridge [repo](https://github.com/appleweed/UnrealMCPBridge) into the `Plugins` folder so that there is a new containing folder with all the project contents underneath.
 4. Right-click your UE project file (ends with `.uproject`) and select "Generate Visual Studio project files". If you don't immediately see that option, first select "Show more options" and it should appear.
 5. Open your new Visual Studio project and build.
 
@@ -30,12 +30,12 @@ This is a plugin for Unreal Engine (UE) that creates a server implementation of 
 
 ## Configure Claude for Desktop
 
-1. Copy `unreal_mcp_client.py` from the [MCPClient folder](https://github.com/odabr/UnrealMCPBridge/tree/main/MCPClient) on GitHub to a location of your choice.
+1. Copy `unreal_mcp_client.py` from the [MCPClient folder](https://github.com/appleweed/UnrealMCPBridge/tree/master/MCPClient) on GitHub to a location of your choice.
 
 2. Find your `claude_desktop_config.json` configuration file. Mac location:
    `~/Library/Application\ Support/Claude/claude_desktop_config.json`
    Windows location:
-   `[path_to_your_user_account]\AppData\Claude\claude_desktop_config.json`
+   `[path_to_your_user_account]\AppData\Roaming\Claude\claude_desktop_config.json`
 
 3. Add the `unreal-engine` server section to your config file and update the path location excluding the square brackets, below.
    - Mac path format: `/[path_from_step_1]/unreal_mcp_client.py`
@@ -131,6 +131,72 @@ This creates a `.mcp.json` file in your project root automatically.
 
 Inside a Claude Code session, type `/mcp` to check the status of connected MCP servers. You should see the `unreal-bridge` server listed as connected.
 
+## Available Tools
+
+These tools are defined in `unreal_mcp_client.py` and are available to the AI agent once the MCP bridge is connected. In Claude Desktop they appear under the hammer-icon. In Claude Code they can be called directly during conversation.
+
+### Project & Asset Discovery
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_project_dir` | — | Returns the top-level project directory path (e.g., `D:/MyProject/`). |
+| `get_content_dir` | — | Returns the Content directory path (e.g., `D:/MyProject/Content/`). |
+| `find_basic_shapes` | — | Returns a list of built-in basic shapes (cube, sphere, cylinder, etc.) that can be used for building. |
+| `find_assets` | `asset_name` | Searches the asset registry for assets matching a name. Use keywords like `Floor`, `Wall`, `Door` to discover meshes. |
+| `get_asset` | `asset_path` | Returns the bounding box dimensions of a static mesh asset. |
+
+### Actor Management
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_actors` | — | Lists all actors in the current level with their name, class, and location. |
+| `get_actor_details` | `actor_name` | Returns all properties and details for a specific actor by name. |
+| `get_selected_actors` | — | Returns the actors currently selected in the editor viewport. Useful for inspecting what the user is looking at. |
+| `spawn_actor` | `asset_path`, `location_x/y/z`, `rotation_x/y/z`, `scale_x/y/z` | Spawns a static mesh actor at the given location, rotation, and scale. All position/rotation/scale parameters default to 0. |
+| `modify_actor` | `actor_name`, `property_name`, `property_value` | Modifies a property of an existing actor. The value is a string that gets converted to the appropriate type on the server side. |
+| `set_material` | `actor_name`, `material_path` | Applies a material to a static mesh actor. Use asset paths like `/Game/Materials/M_MyMaterial`. |
+| `delete_all_static_mesh_actors` | — | Deletes **all** static mesh actors in the scene. Use with caution — this removes everything, not just what was recently placed. |
+
+### Building Utilities
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `create_grid` | `asset_path`, `grid_width`, `grid_length` | Creates a grid of tiles using the given asset, automatically spaced based on the asset's bounding box. `grid_width` and `grid_length` are the number of tiles in each dimension. |
+| `create_town` | `town_center_x/y`, `town_width`, `town_height` | Creates a procedural town layout centered at the given position using available assets. |
+
+### Blueprint Execution
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `run_blueprint_function` | `blueprint_name`, `function_name`, `arguments` | Executes a function defined in a Blueprint. Arguments are passed as a comma-separated string. |
+
+### Viewport & Screenshots
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `take_screenshot` | — | Captures the active editor viewport to a PNG file and returns the file path. |
+| `set_viewport_camera` | `location_x/y/z`, `rotation_pitch/yaw/roll` | Moves the editor viewport camera to a specific location and rotation. Pitch = look up/down, Yaw = compass heading, Roll = tilt. |
+| `focus_viewport_on_actor` | `actor_name`, `distance` | Points the camera at a named actor from a 45-degree overhead angle. Distance is auto-calculated from the actor's bounds, or can be overridden (set to 0 for auto). |
+
+### Python Execution
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `execute_python` | `code` | Executes arbitrary Python code inside the Unreal Engine process. This gives the agent access to the full [Unreal Engine Python API](https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.5). Returns printed output and error tracebacks. |
+
+`execute_python` is the most powerful tool. The agent can import `unreal`, call any editor subsystem, manipulate assets, modify materials, create Blueprints, and run any logic that the UE Python API supports. The other tools are convenience wrappers for common operations that don't require writing Python code.
+
+### Available Prompts
+
+Prompts are pre-written instructions that guide the agent through a multi-step workflow. In Claude Desktop, they appear under the plug-icon.
+
+| Prompt | Description |
+|--------|-------------|
+| `create_castle` | Clears the scene, finds basic shapes, and builds a castle from primitives. |
+| `create_town` | Clears the scene, finds a floor tile, builds a grid, and generates a town layout. |
+
+You can add your own prompts by following the pattern in the "Developing New Tools and Prompts" section below.
+
 ## Developing New Tools and Prompts
 
 Examine `unreal_mcp_client.py` and you'll see how MCP defines tools and prompts using Python decorators above functions. As an example:
@@ -185,3 +251,79 @@ Please create a castle in the current Unreal Engine project.
 Be sure to maintain triple-quotes so the entire prompt is returned. A good way to iterate over creating prompts is simply iterating each step number with Claude until you get satisfactory results. Then combine them all into a numbered step-by-step prompt as shown.
 
 You must restart Claude for any changes to `unreal_mcp_client.py` to take effect. Note for Windows, you might need to end the Claude process in the Task Manager to truly restart Claude. For Claude Code, restart the session or use `/mcp` to reconnect.
+
+## Creating Blueprints and Niagara Systems
+
+The `execute_python` tool gives the agent access to the full Unreal Engine Python API, including two C++ wrapper libraries bundled with this plugin:
+
+- **`BlueprintGraphLibrary`** — Create Blueprint assets, add event/function/variable nodes, wire pins together, and compile. Accessed via `unreal.BlueprintGraphLibrary`.
+- **`NiagaraEditorLibrary`** — Create Niagara particle systems, add emitters and modules, set parameters, configure renderers, and compile. Accessed via `unreal.NiagaraEditorLibrary`.
+
+These libraries are auto-reflected to Python when the plugin is loaded — no additional setup required.
+
+### Creating Blueprints
+
+Ask the agent to create a Blueprint and it will use `execute_python` to call `BlueprintGraphLibrary` functions. The library supports creating Actor Blueprints, adding event nodes, function call nodes, variables, branch logic, and pin connections.
+
+**Example prompt for Claude Desktop** — add this to `unreal_mcp_client.py`:
+
+```python
+@mcp.prompt()
+def create_rotating_actor() -> str:
+    """Create a Blueprint actor that rotates continuously"""
+    return f"""
+Create a Blueprint actor that rotates continuously using the BlueprintGraphLibrary.
+Use execute_python with `import unreal` and `unreal.BlueprintGraphLibrary` to:
+1. Create a new Blueprint at /Game/Blueprints/BP_Rotator with Actor as the parent class.
+2. Add a ReceiveBeginPlay event node.
+3. Add a call to SetActorRotation or AddActorLocalRotation.
+4. Add a variable for rotation speed (float, instance editable, default 1.0).
+5. Connect the event to the function call.
+6. Compile and save the Blueprint.
+7. Spawn an instance of the Blueprint into the level.
+"""
+```
+
+**Example prompt for Claude Code** — type directly in the conversation:
+
+> Create a Blueprint at /Game/Blueprints/BP_DayNightCycle that has a public float variable called "CycleSpeed" and a DirectionalLight reference variable called "SunLight". On BeginPlay it should print "Day/Night cycle started" to the screen.
+
+### Creating Niagara Particle Effects
+
+Ask the agent to create a Niagara system and it will use `execute_python` to call `NiagaraEditorLibrary` functions. The library supports creating systems from scratch, adding emitters with modules (spawn rate, forces, velocity, etc.), configuring renderers (Sprite, Ribbon, Light, Mesh, Decal), and setting parameters.
+
+**Example prompt for Claude Desktop** — add this to `unreal_mcp_client.py`:
+
+```python
+@mcp.prompt()
+def create_rain() -> str:
+    """Create a rain particle effect"""
+    return f"""
+Create a rain Niagara particle system using the NiagaraEditorLibrary.
+Use execute_python with `import unreal` and `unreal.NiagaraEditorLibrary` to:
+1. Create a new Niagara system at /Game/VFX/NS_Rain.
+2. Add an empty emitter named "RainDrops".
+3. Add these modules in order:
+   - SpawnRate (EmitterUpdate) — set to 500 particles/sec.
+   - BoxLocation (ParticleSpawn) — set Box Size to (3000, 3000, 50).
+   - AddVelocity (ParticleSpawn) — set Velocity to (200, 0, -1500) for angled rain.
+   - GravityForce (ParticleUpdate).
+   - SolveForcesAndVelocity (ParticleUpdate).
+4. Set Initialize Particle lifetime to 2.0 seconds.
+5. Set Initialize Particle sprite size to (1, 15) for thin streaks.
+6. Set the sprite renderer to VelocityAligned facing.
+7. Compile and save the system.
+8. Spawn the system into the level at (0, 0, 1500).
+"""
+```
+
+**Example prompt for Claude Code** — type directly in the conversation:
+
+> Create a Niagara lightning effect with a beam emitter. It should be a jagged blue-white bolt that fires once from (0, 0, 2000) down to (0, 0, 0). Use a Ribbon renderer with JitterPosition for the jagged shape.
+
+### Tips for Best Results
+
+- **Be specific about asset paths.** Tell the agent where to save the asset (e.g., `/Game/VFX/NS_MyEffect`) so it doesn't have to guess.
+- **Describe the visual result.** "Long thin rain streaks falling at an angle" gives better results than "make rain."
+- **Iterate.** Ask the agent to create the effect, preview it in the editor, then ask for adjustments ("make the particles bigger", "add more gravity", "change the color to blue").
+- **Close the asset editor** before asking the agent to modify an existing Niagara system or Blueprint. The editor caches its own copy and won't reflect external changes made via Python.

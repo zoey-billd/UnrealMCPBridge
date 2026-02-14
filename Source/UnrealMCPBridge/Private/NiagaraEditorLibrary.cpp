@@ -17,6 +17,9 @@
 #include "NiagaraEmitterEditorData.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraRibbonRendererProperties.h"
+#include "NiagaraLightRendererProperties.h"
+#include "NiagaraMeshRendererProperties.h"
+#include "NiagaraDecalRendererProperties.h"
 #include "NiagaraDataInterfaceCurve.h"
 #include "NiagaraDataInterfaceColorCurve.h"
 #include "NiagaraDataInterfaceVector2DCurve.h"
@@ -28,6 +31,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
 #include "EdGraph/EdGraph.h"
+#include "Engine/StaticMesh.h"
 
 // =============================================================================
 // FILE-LOCAL HELPERS (replacing unexported NiagaraEditor functions)
@@ -628,6 +632,32 @@ int32 UNiagaraEditorLibrary::AddEmptyEmitter(
 	return EmitterIndex;
 }
 
+int32 UNiagaraEditorLibrary::AddEmitterFromAsset(
+	UNiagaraSystem* System,
+	const FString& EmitterAssetPath)
+{
+	if (!System)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] AddEmitterFromAsset: System is null"));
+		return -1;
+	}
+
+	UNiagaraEmitter* SourceEmitter = Cast<UNiagaraEmitter>(
+		StaticLoadObject(UNiagaraEmitter::StaticClass(), nullptr, *EmitterAssetPath));
+	if (!SourceEmitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] AddEmitterFromAsset: Failed to load emitter at '%s'"), *EmitterAssetPath);
+		return -1;
+	}
+
+	FGuid EmitterVersion = SourceEmitter->GetExposedVersion().VersionGuid;
+	FNiagaraEditorUtilities::AddEmitterToSystem(*System, *SourceEmitter, EmitterVersion);
+
+	int32 EmitterIndex = System->GetNumEmitters() - 1;
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Added emitter from asset '%s' at index %d"), *EmitterAssetPath, EmitterIndex);
+	return EmitterIndex;
+}
+
 int32 UNiagaraEditorLibrary::GetEmitterCount(UNiagaraSystem* System)
 {
 	if (!System)
@@ -736,6 +766,59 @@ TArray<FString> UNiagaraEditorLibrary::GetModules(
 			if (NodeUsage == TargetUsage)
 			{
 				Result.Add(FuncNode->GetName());
+			}
+		}
+	}
+
+	return Result;
+}
+
+TArray<FString> UNiagaraEditorLibrary::GetModulesWithScriptNames(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& ExecutionCategory)
+{
+	TArray<FString> Result;
+
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return Result;
+	}
+
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(EmitterData->GraphSource);
+	if (!Source || !Source->NodeGraph)
+	{
+		return Result;
+	}
+
+	ENiagaraScriptUsage TargetUsage;
+	if (!CategoryToScriptUsage(ExecutionCategory, TargetUsage))
+	{
+		return Result;
+	}
+
+	for (UEdGraphNode* Node : Source->NodeGraph->Nodes)
+	{
+		UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (FuncNode)
+		{
+			ENiagaraScriptUsage NodeUsage = FNiagaraStackGraphUtilities::GetOutputNodeUsage(*FuncNode);
+			if (NodeUsage == TargetUsage)
+			{
+				// GetFunctionName() returns FunctionDisplayName (human-readable)
+				FString ScriptName = FuncNode->GetFunctionName();
+				// Fallback to FunctionScript asset name
+				if (ScriptName.IsEmpty() && FuncNode->FunctionScript)
+				{
+					ScriptName = FuncNode->FunctionScript->GetName();
+				}
+				if (ScriptName.IsEmpty())
+				{
+					ScriptName = TEXT("Unknown");
+				}
+				Result.Add(FString::Printf(TEXT("%s|%s"), *FuncNode->GetName(), *ScriptName));
 			}
 		}
 	}
@@ -1375,6 +1458,291 @@ bool UNiagaraEditorLibrary::SetRibbonRendererTessellation(
 	return false;
 }
 
+bool UNiagaraEditorLibrary::SetSpriteRendererMaterial(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& MaterialPath)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UMaterialInterface* Material = Cast<UMaterialInterface>(
+		FSoftObjectPath(MaterialPath).TryLoad());
+	if (!Material)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] Failed to load material: %s"), *MaterialPath);
+		return false;
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		UNiagaraSpriteRendererProperties* SpriteRenderer = Cast<UNiagaraSpriteRendererProperties>(Renderer);
+		if (SpriteRenderer)
+		{
+			SpriteRenderer->Material = Material;
+			UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set sprite material to %s"), *MaterialPath);
+			return true;
+		}
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No sprite renderer found on emitter %d"), EmitterIndex);
+	return false;
+}
+
+bool UNiagaraEditorLibrary::AddLightRenderer(
+	UNiagaraSystem* System,
+	int32 EmitterIndex)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UNiagaraEmitter* Emitter = Handle->GetInstance().Emitter;
+	if (!Emitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] AddLightRenderer: Emitter is null"));
+		return false;
+	}
+
+	UNiagaraLightRendererProperties* Renderer = NewObject<UNiagaraLightRendererProperties>(Emitter, TEXT("LightRenderer"));
+	Emitter->AddRenderer(Renderer, EmitterData->Version.VersionGuid);
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Added light renderer to emitter %d"), EmitterIndex);
+	return true;
+}
+
+bool UNiagaraEditorLibrary::SetLightRendererRadiusScale(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	float RadiusScale)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		UNiagaraLightRendererProperties* LightRenderer = Cast<UNiagaraLightRendererProperties>(Renderer);
+		if (LightRenderer)
+		{
+			LightRenderer->RadiusScale = RadiusScale;
+			UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set light renderer RadiusScale to %f"), RadiusScale);
+			return true;
+		}
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No light renderer found on emitter %d"), EmitterIndex);
+	return false;
+}
+
+bool UNiagaraEditorLibrary::SetLightRendererInverseSquaredFalloff(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	bool bUseInverseSquared)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		UNiagaraLightRendererProperties* LightRenderer = Cast<UNiagaraLightRendererProperties>(Renderer);
+		if (LightRenderer)
+		{
+			LightRenderer->bUseInverseSquaredFalloff = bUseInverseSquared;
+			UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set light renderer InverseSquaredFalloff to %s"),
+				bUseInverseSquared ? TEXT("true") : TEXT("false"));
+			return true;
+		}
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No light renderer found on emitter %d"), EmitterIndex);
+	return false;
+}
+
+bool UNiagaraEditorLibrary::AddMeshRenderer(
+	UNiagaraSystem* System,
+	int32 EmitterIndex)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UNiagaraEmitter* Emitter = Handle->GetInstance().Emitter;
+	if (!Emitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] AddMeshRenderer: Emitter is null"));
+		return false;
+	}
+
+	UNiagaraMeshRendererProperties* Renderer = NewObject<UNiagaraMeshRendererProperties>(Emitter, TEXT("MeshRenderer"));
+	Emitter->AddRenderer(Renderer, EmitterData->Version.VersionGuid);
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Added mesh renderer to emitter %d"), EmitterIndex);
+	return true;
+}
+
+bool UNiagaraEditorLibrary::SetMeshRendererMesh(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& MeshPath)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UStaticMesh* Mesh = Cast<UStaticMesh>(FSoftObjectPath(MeshPath).TryLoad());
+	if (!Mesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] Failed to load static mesh: %s"), *MeshPath);
+		return false;
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		UNiagaraMeshRendererProperties* MeshRenderer = Cast<UNiagaraMeshRendererProperties>(Renderer);
+		if (MeshRenderer)
+		{
+			// MeshRenderer uses an array of meshes; set the first entry
+			if (MeshRenderer->Meshes.Num() == 0)
+			{
+				MeshRenderer->Meshes.AddDefaulted();
+			}
+			MeshRenderer->Meshes[0].Mesh = Mesh;
+			UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set mesh renderer mesh to %s"), *MeshPath);
+			return true;
+		}
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No mesh renderer found on emitter %d"), EmitterIndex);
+	return false;
+}
+
+bool UNiagaraEditorLibrary::SetMeshRendererMaterial(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& MaterialPath)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UMaterialInterface* Material = Cast<UMaterialInterface>(
+		FSoftObjectPath(MaterialPath).TryLoad());
+	if (!Material)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] Failed to load material: %s"), *MaterialPath);
+		return false;
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		UNiagaraMeshRendererProperties* MeshRenderer = Cast<UNiagaraMeshRendererProperties>(Renderer);
+		if (MeshRenderer)
+		{
+			// Material overrides are at the renderer level, not per-mesh
+			MeshRenderer->bOverrideMaterials = true;
+			MeshRenderer->OverrideMaterials.Empty();
+			FNiagaraMeshMaterialOverride Override;
+			Override.ExplicitMat = Material;
+			MeshRenderer->OverrideMaterials.Add(Override);
+			UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set mesh renderer material to %s"), *MaterialPath);
+			return true;
+		}
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No mesh renderer found on emitter %d"), EmitterIndex);
+	return false;
+}
+
+bool UNiagaraEditorLibrary::AddDecalRenderer(
+	UNiagaraSystem* System,
+	int32 EmitterIndex)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UNiagaraEmitter* Emitter = Handle->GetInstance().Emitter;
+	if (!Emitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] AddDecalRenderer: Emitter is null"));
+		return false;
+	}
+
+	UNiagaraDecalRendererProperties* Renderer = NewObject<UNiagaraDecalRendererProperties>(Emitter, TEXT("DecalRenderer"));
+	Emitter->AddRenderer(Renderer, EmitterData->Version.VersionGuid);
+
+	UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Added decal renderer to emitter %d"), EmitterIndex);
+	return true;
+}
+
+bool UNiagaraEditorLibrary::SetDecalRendererMaterial(
+	UNiagaraSystem* System,
+	int32 EmitterIndex,
+	const FString& MaterialPath)
+{
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitterData* EmitterData = nullptr;
+	if (!GetEmitterAndData(System, EmitterIndex, Handle, EmitterData))
+	{
+		return false;
+	}
+
+	UMaterialInterface* Material = Cast<UMaterialInterface>(
+		FSoftObjectPath(MaterialPath).TryLoad());
+	if (!Material)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] Failed to load material: %s"), *MaterialPath);
+		return false;
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	for (UNiagaraRendererProperties* Renderer : Renderers)
+	{
+		UNiagaraDecalRendererProperties* DecalRenderer = Cast<UNiagaraDecalRendererProperties>(Renderer);
+		if (DecalRenderer)
+		{
+			DecalRenderer->Material = Material;
+			UE_LOG(LogTemp, Display, TEXT("[NiagaraEditorLib] Set decal renderer material to %s"), *MaterialPath);
+			return true;
+		}
+	}
+
+	UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No decal renderer found on emitter %d"), EmitterIndex);
+	return false;
+}
+
 // =============================================================================
 // EMITTER PROPERTIES
 // =============================================================================
@@ -1805,6 +2173,34 @@ TArray<FString> UNiagaraEditorLibrary::GetRendererProperties(
 			Result.Add(FString::Printf(TEXT("Ribbon[%d]|Shape=%d"), RendererIdx, (int32)Ribbon->Shape));
 			Result.Add(FString::Printf(TEXT("Ribbon[%d]|DrawDirection=%d"), RendererIdx, (int32)Ribbon->DrawDirection));
 		}
+		else if (UNiagaraLightRendererProperties* Light = Cast<UNiagaraLightRendererProperties>(Renderer))
+		{
+			Result.Add(FString::Printf(TEXT("Light[%d]|RadiusScale=%f"), RendererIdx, Light->RadiusScale));
+			Result.Add(FString::Printf(TEXT("Light[%d]|InverseSquaredFalloff=%s"), RendererIdx,
+				Light->bUseInverseSquaredFalloff ? TEXT("true") : TEXT("false")));
+			Result.Add(FString::Printf(TEXT("Light[%d]|ColorAdd=(%f,%f,%f)"), RendererIdx, Light->ColorAdd.X, Light->ColorAdd.Y, Light->ColorAdd.Z));
+		}
+		else if (UNiagaraMeshRendererProperties* MeshR = Cast<UNiagaraMeshRendererProperties>(Renderer))
+		{
+			FString MeshName = TEXT("None");
+			if (MeshR->Meshes.Num() > 0 && MeshR->Meshes[0].Mesh)
+			{
+				MeshName = MeshR->Meshes[0].Mesh->GetPathName();
+			}
+			Result.Add(FString::Printf(TEXT("Mesh[%d]|Mesh=%s"), RendererIdx, *MeshName));
+			Result.Add(FString::Printf(TEXT("Mesh[%d]|FacingMode=%d"), RendererIdx, (int32)MeshR->FacingMode));
+			Result.Add(FString::Printf(TEXT("Mesh[%d]|SortMode=%d"), RendererIdx, (int32)MeshR->SortMode));
+			if (MeshR->bOverrideMaterials && MeshR->OverrideMaterials.Num() > 0)
+			{
+				FString MatName = MeshR->OverrideMaterials[0].ExplicitMat ? MeshR->OverrideMaterials[0].ExplicitMat->GetPathName() : TEXT("None");
+				Result.Add(FString::Printf(TEXT("Mesh[%d]|OverrideMaterial=%s"), RendererIdx, *MatName));
+			}
+		}
+		else if (UNiagaraDecalRendererProperties* Decal = Cast<UNiagaraDecalRendererProperties>(Renderer))
+		{
+			FString MatName = Decal->Material ? Decal->Material->GetPathName() : TEXT("None");
+			Result.Add(FString::Printf(TEXT("Decal[%d]|Material=%s"), RendererIdx, *MatName));
+		}
 		else
 		{
 			Result.Add(FString::Printf(TEXT("Unknown[%d]|Class=%s"), RendererIdx, *Renderer->GetClass()->GetName()));
@@ -1918,6 +2314,232 @@ TArray<FString> UNiagaraEditorLibrary::ListCachedDataInterfaces(
 		}
 	}
 #endif
+
+	return Result;
+}
+
+// =============================================================================
+// STANDALONE EMITTER ASSET INTROSPECTION
+// =============================================================================
+
+static FVersionedNiagaraEmitterData* GetLatestEmitterData(UNiagaraEmitter* Emitter)
+{
+	if (!Emitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] Emitter is null"));
+		return nullptr;
+	}
+
+	FVersionedNiagaraEmitterData* Data = Emitter->GetLatestEmitterData();
+	if (!Data)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No versioned emitter data for '%s'"), *Emitter->GetName());
+	}
+	return Data;
+}
+
+TArray<FString> UNiagaraEditorLibrary::GetEmitterAssetModules(
+	UNiagaraEmitter* Emitter,
+	const FString& ExecutionCategory)
+{
+	TArray<FString> Result;
+
+	FVersionedNiagaraEmitterData* EmitterData = GetLatestEmitterData(Emitter);
+	if (!EmitterData)
+	{
+		return Result;
+	}
+
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(EmitterData->GraphSource);
+	if (!Source || !Source->NodeGraph)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[NiagaraEditorLib] No graph source for emitter '%s'"), *Emitter->GetName());
+		return Result;
+	}
+
+	ENiagaraScriptUsage TargetUsage;
+	if (!CategoryToScriptUsage(ExecutionCategory, TargetUsage))
+	{
+		return Result;
+	}
+
+	for (UEdGraphNode* Node : Source->NodeGraph->Nodes)
+	{
+		UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (FuncNode)
+		{
+			ENiagaraScriptUsage NodeUsage = FNiagaraStackGraphUtilities::GetOutputNodeUsage(*FuncNode);
+			if (NodeUsage == TargetUsage)
+			{
+				FString ScriptName = FuncNode->GetFunctionName();
+				if (ScriptName.IsEmpty() && FuncNode->FunctionScript)
+				{
+					ScriptName = FuncNode->FunctionScript->GetName();
+				}
+				if (ScriptName.IsEmpty())
+				{
+					ScriptName = TEXT("Unknown");
+				}
+				Result.Add(FString::Printf(TEXT("%s|%s"), *FuncNode->GetName(), *ScriptName));
+			}
+		}
+	}
+
+	return Result;
+}
+
+TArray<FString> UNiagaraEditorLibrary::GetEmitterAssetRenderers(UNiagaraEmitter* Emitter)
+{
+	TArray<FString> Result;
+
+	FVersionedNiagaraEmitterData* EmitterData = GetLatestEmitterData(Emitter);
+	if (!EmitterData)
+	{
+		return Result;
+	}
+
+	int32 RendererIdx = 0;
+	for (UNiagaraRendererProperties* Renderer : EmitterData->GetRenderers())
+	{
+		if (UNiagaraSpriteRendererProperties* Sprite = Cast<UNiagaraSpriteRendererProperties>(Renderer))
+		{
+			FString MatName = Sprite->Material ? Sprite->Material->GetPathName() : TEXT("None");
+			Result.Add(FString::Printf(TEXT("Sprite[%d]|Material=%s"), RendererIdx, *MatName));
+			Result.Add(FString::Printf(TEXT("Sprite[%d]|Alignment=%d"), RendererIdx, (int32)Sprite->Alignment));
+			Result.Add(FString::Printf(TEXT("Sprite[%d]|FacingMode=%d"), RendererIdx, (int32)Sprite->FacingMode));
+		}
+		else if (UNiagaraRibbonRendererProperties* Ribbon = Cast<UNiagaraRibbonRendererProperties>(Renderer))
+		{
+			FString MatName = Ribbon->Material ? Ribbon->Material->GetPathName() : TEXT("None");
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|Material=%s"), RendererIdx, *MatName));
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|TessellationMode=%d"), RendererIdx, (int32)Ribbon->TessellationMode));
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|CurveTension=%f"), RendererIdx, Ribbon->CurveTension));
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|TessellationFactor=%d"), RendererIdx, Ribbon->TessellationFactor));
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|FacingMode=%d"), RendererIdx, (int32)Ribbon->FacingMode));
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|Shape=%d"), RendererIdx, (int32)Ribbon->Shape));
+			Result.Add(FString::Printf(TEXT("Ribbon[%d]|DrawDirection=%d"), RendererIdx, (int32)Ribbon->DrawDirection));
+		}
+		else if (UNiagaraLightRendererProperties* Light = Cast<UNiagaraLightRendererProperties>(Renderer))
+		{
+			Result.Add(FString::Printf(TEXT("Light[%d]|RadiusScale=%f"), RendererIdx, Light->RadiusScale));
+			Result.Add(FString::Printf(TEXT("Light[%d]|InverseSquaredFalloff=%s"), RendererIdx,
+				Light->bUseInverseSquaredFalloff ? TEXT("true") : TEXT("false")));
+			Result.Add(FString::Printf(TEXT("Light[%d]|ColorAdd=(%f,%f,%f)"), RendererIdx, Light->ColorAdd.X, Light->ColorAdd.Y, Light->ColorAdd.Z));
+		}
+		else if (UNiagaraMeshRendererProperties* MeshR = Cast<UNiagaraMeshRendererProperties>(Renderer))
+		{
+			FString MeshName = TEXT("None");
+			if (MeshR->Meshes.Num() > 0 && MeshR->Meshes[0].Mesh)
+			{
+				MeshName = MeshR->Meshes[0].Mesh->GetPathName();
+			}
+			Result.Add(FString::Printf(TEXT("Mesh[%d]|Mesh=%s"), RendererIdx, *MeshName));
+			Result.Add(FString::Printf(TEXT("Mesh[%d]|FacingMode=%d"), RendererIdx, (int32)MeshR->FacingMode));
+			Result.Add(FString::Printf(TEXT("Mesh[%d]|SortMode=%d"), RendererIdx, (int32)MeshR->SortMode));
+			if (MeshR->bOverrideMaterials && MeshR->OverrideMaterials.Num() > 0)
+			{
+				FString MatName = MeshR->OverrideMaterials[0].ExplicitMat ? MeshR->OverrideMaterials[0].ExplicitMat->GetPathName() : TEXT("None");
+				Result.Add(FString::Printf(TEXT("Mesh[%d]|OverrideMaterial=%s"), RendererIdx, *MatName));
+			}
+		}
+		else if (UNiagaraDecalRendererProperties* Decal = Cast<UNiagaraDecalRendererProperties>(Renderer))
+		{
+			FString MatName = Decal->Material ? Decal->Material->GetPathName() : TEXT("None");
+			Result.Add(FString::Printf(TEXT("Decal[%d]|Material=%s"), RendererIdx, *MatName));
+		}
+		else
+		{
+			Result.Add(FString::Printf(TEXT("Unknown[%d]|Class=%s"), RendererIdx, *Renderer->GetClass()->GetName()));
+		}
+		RendererIdx++;
+	}
+
+	return Result;
+}
+
+TArray<FString> UNiagaraEditorLibrary::GetEmitterAssetRIParams(UNiagaraEmitter* Emitter)
+{
+	TArray<FString> Result;
+
+	FVersionedNiagaraEmitterData* EmitterData = GetLatestEmitterData(Emitter);
+	if (!EmitterData)
+	{
+		return Result;
+	}
+
+	struct FScriptInfo
+	{
+		const TCHAR* Name;
+		UNiagaraScript* Script;
+	};
+
+	TArray<FScriptInfo> Scripts;
+	Scripts.Add({TEXT("EmitterSpawn"), EmitterData->EmitterSpawnScriptProps.Script});
+	Scripts.Add({TEXT("EmitterUpdate"), EmitterData->EmitterUpdateScriptProps.Script});
+	Scripts.Add({TEXT("ParticleSpawn"), EmitterData->SpawnScriptProps.Script});
+	Scripts.Add({TEXT("ParticleUpdate"), EmitterData->UpdateScriptProps.Script});
+
+	for (const FScriptInfo& Info : Scripts)
+	{
+		if (!Info.Script)
+		{
+			continue;
+		}
+
+		auto Params = Info.Script->RapidIterationParameters.ReadParameterVariables();
+		for (const auto& Var : Params)
+		{
+			FString TypeName = Var.GetType().GetName();
+			FString ValueStr = TEXT("?");
+			FNiagaraVariable TempVar(Var.GetType(), Var.GetName());
+			const int32 ParamIdx = Info.Script->RapidIterationParameters.IndexOf(TempVar);
+			if (ParamIdx != INDEX_NONE)
+			{
+				const uint8* DataPtr = Info.Script->RapidIterationParameters.GetParameterData(TempVar);
+				if (DataPtr)
+				{
+					if (Var.GetType() == FNiagaraTypeDefinition::GetFloatDef())
+					{
+						float Val;
+						FMemory::Memcpy(&Val, DataPtr, sizeof(float));
+						ValueStr = FString::SanitizeFloat(Val);
+					}
+					else if (Var.GetType() == FNiagaraTypeDefinition::GetIntDef())
+					{
+						int32 Val;
+						FMemory::Memcpy(&Val, DataPtr, sizeof(int32));
+						ValueStr = FString::FromInt(Val);
+					}
+					else if (Var.GetType() == FNiagaraTypeDefinition::GetVec3Def())
+					{
+						FVector3f V;
+						FMemory::Memcpy(&V, DataPtr, sizeof(FVector3f));
+						ValueStr = FString::Printf(TEXT("(%f,%f,%f)"), V.X, V.Y, V.Z);
+					}
+					else if (Var.GetType() == FNiagaraTypeDefinition::GetVec2Def())
+					{
+						FVector2f V;
+						FMemory::Memcpy(&V, DataPtr, sizeof(FVector2f));
+						ValueStr = FString::Printf(TEXT("(%f,%f)"), V.X, V.Y);
+					}
+					else if (Var.GetType() == FNiagaraTypeDefinition::GetColorDef())
+					{
+						FLinearColor C;
+						FMemory::Memcpy(&C, DataPtr, sizeof(FLinearColor));
+						ValueStr = FString::Printf(TEXT("(%f,%f,%f,%f)"), C.R, C.G, C.B, C.A);
+					}
+					else if (Var.GetType() == FNiagaraTypeDefinition::GetPositionDef())
+					{
+						FVector3f V;
+						FMemory::Memcpy(&V, DataPtr, sizeof(FVector3f));
+						ValueStr = FString::Printf(TEXT("(%f,%f,%f)"), V.X, V.Y, V.Z);
+					}
+				}
+			}
+
+			Result.Add(FString::Printf(TEXT("%s|%s|%s|%s"), Info.Name, *Var.GetName().ToString(), *TypeName, *ValueStr));
+		}
+	}
 
 	return Result;
 }

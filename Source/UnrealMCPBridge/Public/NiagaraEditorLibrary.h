@@ -69,6 +69,16 @@ public:
 		UNiagaraSystem* System,
 		const FString& EmitterName);
 
+	/** Add an existing emitter asset to a system (e.g., a pre-built emitter like NE_Arc).
+	 * @param System Target system
+	 * @param EmitterAssetPath Full asset path to the emitter (e.g., "/NiagaraExamples/FX_Ribbons/Emitters/NE_Arc.NE_Arc")
+	 * @return Emitter index (0-based), or -1 on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Emitter")
+	static int32 AddEmitterFromAsset(
+		UNiagaraSystem* System,
+		const FString& EmitterAssetPath);
+
 	/** Get the number of emitters in a system.
 	 * @param System Target system
 	 * @return Number of emitters
@@ -109,6 +119,20 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Modules")
 	static TArray<FString> GetModules(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& ExecutionCategory);
+
+	/** List module node names with human-readable script names.
+	 * Returns "NodeID|ScriptName" pairs so introspection shows readable names
+	 * while preserving node IDs for parameter setting.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param ExecutionCategory Stage name
+	 * @return Array of strings in format "NodeID|ScriptName"
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Modules")
+	static TArray<FString> GetModulesWithScriptNames(
 		UNiagaraSystem* System,
 		int32 EmitterIndex,
 		const FString& ExecutionCategory);
@@ -357,6 +381,109 @@ public:
 		int32 EmitterIndex,
 		float CurveTension);
 
+	/** Set sprite renderer material.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param MaterialPath Asset path to the material
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool SetSpriteRendererMaterial(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& MaterialPath);
+
+	/** Add a light renderer to an emitter (for fire sparks, explosions, glowing particles).
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @return true if renderer was added
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool AddLightRenderer(
+		UNiagaraSystem* System,
+		int32 EmitterIndex);
+
+	/** Set light renderer radius scale.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param RadiusScale Scale multiplier for light radius
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool SetLightRendererRadiusScale(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		float RadiusScale);
+
+	/** Set whether light renderer uses inverse squared falloff.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param bUseInverseSquared true for physically-based falloff
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool SetLightRendererInverseSquaredFalloff(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		bool bUseInverseSquared);
+
+	/** Add a mesh renderer to an emitter (for debris, projectiles, shells).
+	 * Note: You must call SetMeshRendererMesh to assign a mesh — there is no default.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @return true if renderer was added
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool AddMeshRenderer(
+		UNiagaraSystem* System,
+		int32 EmitterIndex);
+
+	/** Set the static mesh for a mesh renderer.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param MeshPath Asset path to the static mesh
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool SetMeshRendererMesh(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& MeshPath);
+
+	/** Set the material for a mesh renderer.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param MaterialPath Asset path to the material
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool SetMeshRendererMaterial(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& MaterialPath);
+
+	/** Add a decal renderer to an emitter (for ground marks, bullet holes).
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @return true if renderer was added
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool AddDecalRenderer(
+		UNiagaraSystem* System,
+		int32 EmitterIndex);
+
+	/** Set the material for a decal renderer.
+	 * @param System Target system
+	 * @param EmitterIndex Emitter index
+	 * @param MaterialPath Asset path to the material
+	 * @return true if set successfully
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Renderers")
+	static bool SetDecalRendererMaterial(
+		UNiagaraSystem* System,
+		int32 EmitterIndex,
+		const FString& MaterialPath);
+
 	// =========================================================================
 	// EMITTER PROPERTIES
 	// =========================================================================
@@ -542,4 +669,35 @@ private:
 	static UNiagaraScript* GetScriptForCategory(
 		FVersionedNiagaraEmitterData* EmitterData,
 		const FString& ExecutionCategory);
+
+	// =========================================================================
+	// STANDALONE EMITTER ASSET INTROSPECTION
+	// =========================================================================
+
+public:
+
+	/** Get modules with script names from a standalone emitter asset (e.g., NE_Arc).
+	 * Works around the UE5 versioned emitter deprecation that blocks Python property access.
+	 * @param Emitter The emitter asset to introspect
+	 * @param ExecutionCategory Stage: "EmitterSpawn", "EmitterUpdate", "ParticleSpawn", "ParticleUpdate"
+	 * @return Array of "NodeID|ScriptName" strings
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Emitter Asset")
+	static TArray<FString> GetEmitterAssetModules(
+		UNiagaraEmitter* Emitter,
+		const FString& ExecutionCategory);
+
+	/** Get renderer properties from a standalone emitter asset.
+	 * @param Emitter The emitter asset to introspect
+	 * @return Array of "Type[idx]|Property=Value" strings (same format as GetRendererProperties)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Emitter Asset")
+	static TArray<FString> GetEmitterAssetRenderers(UNiagaraEmitter* Emitter);
+
+	/** List rapid iteration parameters from a standalone emitter asset.
+	 * @param Emitter The emitter asset to introspect
+	 * @return Array of "Stage|ParamName|Type|Value" strings (same format as ListRapidIterationParameters)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Niagara Editor|Emitter Asset")
+	static TArray<FString> GetEmitterAssetRIParams(UNiagaraEmitter* Emitter);
 };
