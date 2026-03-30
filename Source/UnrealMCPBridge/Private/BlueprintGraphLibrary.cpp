@@ -214,12 +214,14 @@ FString UBlueprintGraphLibrary::AddEventNode(
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = EventNode;
 	UEdGraphPin* NullPin = nullptr;
-	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
+	// PerformAction duplicates the template and adds the copy to the graph.
+	// The returned node is the actual graph node with pins allocated.
+	UEdGraphNode* CreatedNode = Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
-	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added event node: %s -> %s"), *EventName, *EventNode->GetName());
-	return EventNode->GetName();
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added event node: %s -> %s"), *EventName, *CreatedNode->GetName());
+	return CreatedNode->GetName();
 }
 
 FString UBlueprintGraphLibrary::AddCallFunctionNode(
@@ -407,12 +409,12 @@ FString UBlueprintGraphLibrary::AddCustomEventNode(
 	FEdGraphSchemaAction_K2NewNode Action;
 	Action.NodeTemplate = Node;
 	UEdGraphPin* NullPin = nullptr;
-	Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
+	UEdGraphNode* CreatedNode = Action.PerformAction(EventGraph, NullPin, FGraphNodePosition(PosX, PosY));
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
-	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added custom event node: %s -> %s"), *EventName, *Node->GetName());
-	return Node->GetName();
+	UE_LOG(LogTemp, Display, TEXT("[BlueprintGraphLib] Added custom event node: %s -> %s"), *EventName, *CreatedNode->GetName());
+	return CreatedNode->GetName();
 }
 
 // =============================================================================
