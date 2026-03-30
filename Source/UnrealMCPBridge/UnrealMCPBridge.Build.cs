@@ -58,7 +58,10 @@ public class UnrealMCPBridge : ModuleRules
 				"NiagaraEditor",
 				"Sequencer",
 				"ImageWrapper",
-				"LevelEditor"
+				"LevelEditor",
+				"TraceLog",
+				"TraceAnalysis",
+				"TraceServices"
             }
 			);
 		

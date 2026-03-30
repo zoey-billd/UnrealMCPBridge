@@ -1442,5 +1442,92 @@ class MCPUnrealBridge:
                 "traceback" : traceback.format_exc()
             })
 
+    @staticmethod
+    def start_trace(channels=None):
+        """Start a trace capture to file. Returns the trace file path.
+        Channels default to CPU, GPU, Frame, Counters, Region, Bookmark."""
+        try:
+            tul = unreal.TraceUtilLibrary
+            if tul.is_tracing():
+                return json.dumps({"status": "error", "message": "Already tracing. Call stop_trace first."})
+
+            if channels is None:
+                channels = ['CpuChannel', 'GpuChannel', 'FrameChannel',
+                            'CountersChannel', 'StatsChannel',
+                            'RenderCommandsChannel', 'RegionChannel',
+                            'BookmarkChannel']
+
+            import time
+            filename = f'mcp_trace_{int(time.time())}'
+            result = tul.start_trace_to_file(filename, channels)
+            if result:
+                return json.dumps({"status": "success", "result": f"Trace started: {filename}"})
+            else:
+                return json.dumps({"status": "error", "message": "start_trace_to_file returned false"})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def stop_trace():
+        """Stop the current trace capture. Returns the path to the .utrace file."""
+        try:
+            import os, glob
+            tul = unreal.TraceUtilLibrary
+            if not tul.is_tracing():
+                return json.dumps({"status": "error", "message": "Not currently tracing."})
+
+            result = tul.stop_tracing()
+            if not result:
+                return json.dumps({"status": "error", "message": "stop_tracing returned false"})
+
+            # Find the most recent .utrace file
+            profiling_dir = os.path.join(unreal.Paths.project_dir(), 'Saved', 'Profiling')
+            utrace_files = glob.glob(os.path.join(profiling_dir, '*.utrace'))
+            if not utrace_files:
+                return json.dumps({"status": "error", "message": "No .utrace file found after stopping"})
+
+            latest = max(utrace_files, key=os.path.getmtime)
+            native_path = os.path.abspath(latest)
+            return json.dumps({"status": "success", "result": native_path})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def analyze_trace(trace_path, top_n=50):
+        """Analyze a .utrace file and return top timing scopes as JSON."""
+        try:
+            trace_path = decode_b64_param(trace_path)
+            result = unreal.TraceAnalysisLibrary.analyze_trace(str(trace_path), int(top_n))
+            if result.startswith("Error:"):
+                return json.dumps({"status": "error", "message": result})
+            return json.dumps({"status": "success", "result": result})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def get_trace_spikes(trace_path, budget_ms=33.33, max_frames=20, top_scopes_per_frame=10):
+        """Find frames exceeding a time budget in a .utrace file."""
+        try:
+            trace_path = decode_b64_param(trace_path)
+            result = unreal.TraceAnalysisLibrary.get_trace_spikes(
+                str(trace_path), float(budget_ms), int(max_frames), int(top_scopes_per_frame))
+            if result.startswith("Error:"):
+                return json.dumps({"status": "error", "message": result})
+            return json.dumps({"status": "success", "result": result})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def get_trace_frame_summary(trace_path):
+        """Get frame timing statistics from a .utrace file."""
+        try:
+            trace_path = decode_b64_param(trace_path)
+            result = unreal.TraceAnalysisLibrary.get_trace_frame_summary(str(trace_path))
+            if result.startswith("Error:"):
+                return json.dumps({"status": "error", "message": result})
+            return json.dumps({"status": "success", "result": result})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
 # Register the bridge as a global variable
 mcp_bridge = MCPUnrealBridge()

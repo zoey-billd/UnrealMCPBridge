@@ -491,6 +491,94 @@ Please create a town in the current Unreal Engine project.
 5. Create a town centered on the grid and with the same width and height as the grid.
 """
 
+# ============================================================================
+# Trace Analysis Tools
+# ============================================================================
+
+@mcp.tool()
+def start_trace() -> str:
+    """
+    Start capturing an Unreal Insights trace to file.
+    Captures CPU, GPU, Frame, Counters, and Region channels.
+    Call stop_trace() when done to get the file path.
+    """
+    result = send_command("start_trace")
+    if result.get("status") == "success":
+        return result.get("result", "Trace started")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def stop_trace() -> str:
+    """
+    Stop the current trace capture.
+    Returns the absolute path to the .utrace file.
+    """
+    result = send_command("stop_trace")
+    if result.get("status") == "success":
+        return result.get("result", "Trace stopped")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def analyze_trace(trace_path: str, top_n: int = 50) -> str:
+    """
+    Analyze a .utrace file and return a JSON summary of performance data.
+    Includes: trace duration, thread info, frame statistics, and the top N
+    most expensive timing scopes sorted by total inclusive time.
+
+    Each scope includes: name, source file/line, call count,
+    total/avg/max inclusive and exclusive time in milliseconds, and type (cpu/gpu).
+
+    Args:
+        trace_path: Absolute path to the .utrace file
+        top_n: Number of top scopes to return (default 50, 0 = all)
+    """
+    result = send_command("analyze_trace", {
+        "trace_path": trace_path,
+        "top_n": top_n
+    })
+    if result.get("status") == "success":
+        return result.get("result", "{}")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def get_trace_spikes(trace_path: str, budget_ms: float = 33.33, max_frames: int = 20, top_scopes_per_frame: int = 10) -> str:
+    """
+    Find frames in a .utrace that exceeded a time budget.
+    For each spike frame, returns the top timing scopes contributing to that frame.
+
+    Args:
+        trace_path: Absolute path to the .utrace file
+        budget_ms: Frame time budget in ms (default 33.33 = 30fps, use 16.67 for 60fps)
+        max_frames: Maximum spike frames to return (default 20, 0 = all)
+        top_scopes_per_frame: Top scopes per spike frame (default 10)
+    """
+    result = send_command("get_trace_spikes", {
+        "trace_path": trace_path,
+        "budget_ms": budget_ms,
+        "max_frames": max_frames,
+        "top_scopes_per_frame": top_scopes_per_frame
+    })
+    if result.get("status") == "success":
+        return result.get("result", "{}")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def get_trace_frame_summary(trace_path: str) -> str:
+    """
+    Get frame timing statistics from a .utrace file.
+    Returns: frame count, avg/min/max frame time, FPS, percentiles (p50/p90/p95/p99),
+    and counts of frames exceeding 60fps and 30fps budgets.
+
+    Args:
+        trace_path: Absolute path to the .utrace file
+    """
+    result = send_command("get_trace_frame_summary", {
+        "trace_path": trace_path
+    })
+    if result.get("status") == "success":
+        return result.get("result", "{}")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
 # Run the server
 if __name__ == "__main__":
     print("Starting Unreal Engine MCP Bridge")
