@@ -178,6 +178,16 @@ These tools are defined in `unreal_mcp_client.py` and are available to the AI ag
 | `set_viewport_camera` | `location_x/y/z`, `rotation_pitch/yaw/roll` | Moves the editor viewport camera to a specific location and rotation. Pitch = look up/down, Yaw = compass heading, Roll = tilt. |
 | `focus_viewport_on_actor` | `actor_name`, `distance` | Points the camera at a named actor from a 45-degree overhead angle. Distance is auto-calculated from the actor's bounds, or can be overridden (set to 0 for auto). |
 
+### Performance Tracing & Analysis
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `start_trace` | — | Starts capturing an Unreal Insights trace to file. Captures CPU, GPU, Frame, Counters, and Region channels. Call `stop_trace` when done. |
+| `stop_trace` | — | Stops the current trace capture. Returns the absolute path to the `.utrace` file. |
+| `analyze_trace` | `trace_path`, `top_n` | Parses a `.utrace` file and returns a JSON summary including: trace duration, thread info, frame statistics (avg/min/max FPS), and the top N most expensive timing scopes sorted by total inclusive time. Each scope includes name, source file/line, call count, and total/avg/max inclusive time in milliseconds. Default `top_n` = 50. |
+| `get_trace_spikes` | `trace_path`, `budget_ms`, `max_frames`, `top_scopes_per_frame` | Finds frames that exceeded a time budget. For each spike frame, returns the top timing scopes contributing to that frame. Default budget = 33.33ms (30fps). |
+| `get_trace_frame_summary` | `trace_path` | Returns frame timing statistics from a `.utrace` file: frame count, avg/min/max frame time, FPS, percentiles (p50/p90/p95/p99), and counts of frames exceeding 60fps and 30fps budgets. |
+
 ### Python Execution
 
 | Tool | Parameters | Description |
@@ -196,6 +206,17 @@ Prompts are pre-written instructions that guide the agent through a multi-step w
 | `create_town` | Clears the scene, finds a floor tile, builds a grid, and generates a town layout. |
 
 You can add your own prompts by following the pattern in the "Developing New Tools and Prompts" section below.
+
+## C++ Libraries (via execute_python)
+
+The plugin bundles four C++ `BlueprintFunctionLibrary` classes that auto-reflect to Python when the plugin is loaded. These are accessed via `execute_python` using `import unreal`:
+
+| Library | Python Access | Purpose |
+|---------|--------------|---------|
+| `BlueprintGraphLibrary` | `unreal.BlueprintGraphLibrary` | Create Blueprint assets, add event/function/variable nodes, wire exec and data pins, compile and save. |
+| `NiagaraEditorLibrary` | `unreal.NiagaraEditorLibrary` | Create Niagara particle systems, add emitters and modules, set parameters, configure renderers (Sprite/Ribbon/Light/Mesh/Decal), compile. |
+| `ViewportCaptureLibrary` | `unreal.ViewportCaptureLibrary` | Synchronous viewport screenshot capture via ReadPixels. Used internally by `take_screenshot`. |
+| `TraceAnalysisLibrary` | `unreal.TraceAnalysisLibrary` | Parse Unreal Insights `.utrace` files — extract timing scopes, frame stats, thread info. Used internally by `analyze_trace`, `get_trace_spikes`, `get_trace_frame_summary`. |
 
 ## Developing New Tools and Prompts
 
@@ -254,16 +275,11 @@ You must restart Claude for any changes to `unreal_mcp_client.py` to take effect
 
 ## Creating Blueprints and Niagara Systems
 
-The `execute_python` tool gives the agent access to the full Unreal Engine Python API, including two C++ wrapper libraries bundled with this plugin:
-
-- **`BlueprintGraphLibrary`** — Create Blueprint assets, add event/function/variable nodes, wire pins together, and compile. Accessed via `unreal.BlueprintGraphLibrary`.
-- **`NiagaraEditorLibrary`** — Create Niagara particle systems, add emitters and modules, set parameters, configure renderers, and compile. Accessed via `unreal.NiagaraEditorLibrary`.
-
-These libraries are auto-reflected to Python when the plugin is loaded — no additional setup required.
+The `execute_python` tool gives the agent access to the full Unreal Engine Python API, including the C++ wrapper libraries bundled with this plugin (see table above).
 
 ### Creating Blueprints
 
-Ask the agent to create a Blueprint and it will use `execute_python` to call `BlueprintGraphLibrary` functions. The library supports creating Actor Blueprints, adding event nodes, function call nodes, variables, branch logic, and pin connections.
+Ask the agent to create a Blueprint and it will use `execute_python` to call `BlueprintGraphLibrary` functions. The library supports creating Actor Blueprints, adding event nodes (BeginPlay, Tick, custom events), function call nodes, variables, branch logic, and pin connections — including exec pin wiring on event nodes.
 
 **Example prompt for Claude Desktop** — add this to `unreal_mcp_client.py`:
 
@@ -321,9 +337,36 @@ Use execute_python with `import unreal` and `unreal.NiagaraEditorLibrary` to:
 
 > Create a Niagara lightning effect with a beam emitter. It should be a jagged blue-white bolt that fires once from (0, 0, 2000) down to (0, 0, 0). Use a Ribbon renderer with JitterPosition for the jagged shape.
 
+### Analyzing Performance with Unreal Insights
+
+The agent can capture and analyze performance traces without leaving the conversation. This uses the `TraceAnalysisLibrary` to parse `.utrace` files and extract function-level timing data — the same data visible in the Unreal Insights standalone application.
+
+**Workflow:**
+
+```
+1. start_trace              → begins capturing CPU/GPU/Frame data to a .utrace file
+2. [perform actions]        → play in editor, stress test, build geometry
+3. stop_trace               → stops capture, returns the .utrace file path
+4. analyze_trace(path, 20)  → returns top 20 most expensive timing scopes with call counts and durations
+5. get_trace_spikes(path)   → finds frames that exceeded the frame budget and shows what caused each spike
+6. get_trace_frame_summary  → frame time percentiles (p50/p90/p95/p99), FPS stats, budget violations
+```
+
+**Example prompt for Claude Code** — type directly in the conversation:
+
+> Start a performance trace, wait 10 seconds, stop the trace, then analyze it. Show me the top 20 most expensive functions and any frames that exceeded the 30fps budget.
+
+**What the analysis returns:**
+
+- **Per-scope data:** Function name, source file and line number, call count, total/average/max inclusive time in milliseconds
+- **Frame statistics:** Frame count, avg/min/max frame time, average FPS, p50/p90/p95/p99 percentiles
+- **Spike analysis:** Frames exceeding a budget (e.g., 33.33ms for 30fps) with the top contributing scopes per frame
+- **Thread info:** All threads with names and group assignments
+
 ### Tips for Best Results
 
 - **Be specific about asset paths.** Tell the agent where to save the asset (e.g., `/Game/VFX/NS_MyEffect`) so it doesn't have to guess.
 - **Describe the visual result.** "Long thin rain streaks falling at an angle" gives better results than "make rain."
 - **Iterate.** Ask the agent to create the effect, preview it in the editor, then ask for adjustments ("make the particles bigger", "add more gravity", "change the color to blue").
 - **Close the asset editor** before asking the agent to modify an existing Niagara system or Blueprint. The editor caches its own copy and won't reflect external changes made via Python.
+- **For performance analysis,** capture traces during representative workloads — PIE play sessions, complex scenes, or stress tests yield more useful data than idle editor traces.
