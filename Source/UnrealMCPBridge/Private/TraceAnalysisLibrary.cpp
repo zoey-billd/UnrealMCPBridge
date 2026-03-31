@@ -328,38 +328,66 @@ FString UTraceAnalysisLibrary::GetTraceSpikes(const FString& TracePath, float Bu
 		SpikeObj->SetNumberField(TEXT("start_time"), Spike.StartTime);
 		SpikeObj->SetNumberField(TEXT("end_time"), Spike.EndTime);
 
-		// Aggregate this frame's timing scopes
-		TraceServices::FCreateAggregationParams AggParams;
-		AggParams.IntervalStart = Spike.StartTime;
-		AggParams.IntervalEnd = Spike.EndTime;
-		AggParams.SortBy = TraceServices::FCreateAggregationParams::ESortBy::TotalInclusiveTime;
-		AggParams.SortOrder = TraceServices::FCreateAggregationParams::ESortOrder::Descending;
-		AggParams.TableEntryLimit = TopScopesPerFrame;
-
-		TUniquePtr<TraceServices::ITable<TraceServices::FTimingProfilerAggregatedStats>> AggTable(
-			TimingProvider->CreateAggregation(AggParams));
-
-		if (AggTable.IsValid())
+		// Aggregate this frame's timing scopes via manual timeline enumeration
+		struct FFrameScopeStats
 		{
-			TArray<TSharedPtr<FJsonValue>> FrameScopes;
-			TUniquePtr<TraceServices::ITableReader<TraceServices::FTimingProfilerAggregatedStats>> Reader(
-				AggTable->CreateReader());
-			while (Reader->IsValid())
+			const TCHAR* Name = nullptr;
+			uint64 Count = 0;
+			double TotalInclusiveTime = 0.0;
+		};
+		TMap<uint32, FFrameScopeStats> FrameScopeMap;
+
+		TimingProvider->EnumerateTimelines([&](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
+		{
+			Timeline.EnumerateEvents(Spike.StartTime, Spike.EndTime,
+				[&](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event) -> TraceServices::EEventEnumerate
 			{
-				const TraceServices::FTimingProfilerAggregatedStats* Row = Reader->GetCurrentRow();
-				if (Row && Row->Timer)
+				double IncTime = EndTime - StartTime;
+				if (!FMath::IsFinite(IncTime) || IncTime < 0.0)
 				{
-					TSharedRef<FJsonObject> ScopeObj = MakeShared<FJsonObject>();
-					ScopeObj->SetStringField(TEXT("name"), Row->Timer->Name ? Row->Timer->Name : TEXT("Unknown"));
-					ScopeObj->SetNumberField(TEXT("count"), static_cast<double>(Row->InstanceCount));
-					ScopeObj->SetNumberField(TEXT("inclusive_ms"), Row->TotalInclusiveTime * 1000.0);
-					ScopeObj->SetNumberField(TEXT("exclusive_ms"), Row->TotalExclusiveTime * 1000.0);
-					FrameScopes.Add(MakeShared<FJsonValueObject>(ScopeObj));
+					return TraceServices::EEventEnumerate::Continue;
 				}
-				Reader->NextRow();
-			}
-			SpikeObj->SetArrayField(TEXT("top_scopes"), FrameScopes);
+				FFrameScopeStats& Stats = FrameScopeMap.FindOrAdd(Event.TimerIndex);
+				if (Stats.Name == nullptr)
+				{
+					TimingProvider->ReadTimers([&](const TraceServices::ITimingProfilerTimerReader& TimerReader)
+					{
+						const TraceServices::FTimingProfilerTimer* Timer = TimerReader.GetTimer(Event.TimerIndex);
+						if (Timer)
+						{
+							Stats.Name = Timer->Name;
+						}
+					});
+				}
+				Stats.Count++;
+				Stats.TotalInclusiveTime += IncTime;
+				return TraceServices::EEventEnumerate::Continue;
+			});
+		});
+
+		// Sort and take top N
+		TArray<TPair<uint32, FFrameScopeStats>> SortedFrameScopes;
+		for (auto& KV : FrameScopeMap)
+		{
+			SortedFrameScopes.Add(TPair<uint32, FFrameScopeStats>(KV.Key, KV.Value));
 		}
+		SortedFrameScopes.Sort([](const auto& A, const auto& B)
+		{
+			return A.Value.TotalInclusiveTime > B.Value.TotalInclusiveTime;
+		});
+
+		int32 ScopeLimit = FMath::Min(TopScopesPerFrame, SortedFrameScopes.Num());
+		TArray<TSharedPtr<FJsonValue>> FrameScopes;
+		for (int32 si = 0; si < ScopeLimit; si++)
+		{
+			const FFrameScopeStats& Stats = SortedFrameScopes[si].Value;
+			TSharedRef<FJsonObject> ScopeObj = MakeShared<FJsonObject>();
+			ScopeObj->SetStringField(TEXT("name"), Stats.Name ? Stats.Name : TEXT("Unknown"));
+			ScopeObj->SetNumberField(TEXT("count"), static_cast<double>(Stats.Count));
+			ScopeObj->SetNumberField(TEXT("inclusive_ms"), Stats.TotalInclusiveTime * 1000.0);
+			FrameScopes.Add(MakeShared<FJsonValueObject>(ScopeObj));
+		}
+		SpikeObj->SetArrayField(TEXT("top_scopes"), FrameScopes);
 
 		SpikesArray.Add(MakeShared<FJsonValueObject>(SpikeObj));
 	}
