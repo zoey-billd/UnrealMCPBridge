@@ -471,7 +471,7 @@ def create_castle() -> str:
     """Create a castle"""
     return f"""
 Please create a castle in the current Unreal Engine project.
-0. Refer to the Unreal Engine Python API when creating new python code: https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.5
+0. Refer to the Unreal Engine Python API when creating new python code: https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.7
 1. Clear all the StaticMeshActors in the scene.
 2. Get the project directory and the content directory.
 3. Find basic shapes to use for building structures.
@@ -483,7 +483,7 @@ def create_town() -> str:
     """Create a town"""
     return f"""
 Please create a town in the current Unreal Engine project.
-0. Refer to the Unreal Engine Python API when creating new python code: https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.5
+0. Refer to the Unreal Engine Python API when creating new python code: https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.7
 1. Clear all the StaticMeshActors in the scene.
 2. Get the project directory and the content directory.
 3. Find a square static mesh asset that can be used as a floor tile. Note its dimensions.
@@ -575,6 +575,54 @@ def get_trace_frame_summary(trace_path: str) -> str:
     result = send_command("get_trace_frame_summary", {
         "trace_path": trace_path
     })
+    if result.get("status") == "success":
+        return result.get("result", "{}")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+# ============================================================================
+# CSV Profiler Tools
+# ============================================================================
+
+@mcp.tool()
+def start_csv_profile() -> str:
+    """
+    Start the CSV profiler for high-level performance capture.
+    Captures per-frame aggregate stats: FrameTime, GameThreadTime, RenderThreadTime,
+    GPUTime, DrawCalls, memory usage, and hundreds of category-level counters.
+    Call stop_csv_profile() when done to get the parsed summary.
+    """
+    result = send_command("start_csv_profile")
+    if result.get("status") == "success":
+        return result.get("result", "CSV profiler started")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def stop_csv_profile() -> str:
+    """
+    Stop the CSV profiler capture.
+    The CSV file needs a moment to finalize. Call get_csv_profile() after a few seconds to read the results.
+    """
+    result = send_command("stop_csv_profile")
+    if result.get("status") == "success":
+        return result.get("result", "CSV profiler stopped")
+    return f"Error: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+def get_csv_profile() -> str:
+    """
+    Read and parse the most recent CSV profile into a performance summary.
+    Call this after stop_csv_profile() has had a few seconds to finalize.
+
+    Returns JSON with:
+    - timing: avg/min/max/p50/p95/p99 for FrameTime, GameThreadTime, RenderThreadTime, GPUTime
+    - counters: DrawCalls, PrimitivesDrawn, memory usage stats
+    - budget: frames over 60fps/30fps budgets with percentages, average FPS
+    - trend: first-half vs second-half comparison to detect degradation
+
+    Use this for a quick high-level performance read. Follow up with start_trace/analyze_trace
+    for function-level detail on any bottlenecks found.
+    """
+    result = send_command("get_csv_profile")
     if result.get("status") == "success":
         return result.get("result", "{}")
     return f"Error: {result.get('message', 'Unknown error')}"

@@ -1529,5 +1529,149 @@ class MCPUnrealBridge:
         except Exception as e:
             return json.dumps({"status": "error", "message": str(e)})
 
+    @staticmethod
+    def start_csv_profile():
+        """Start CSV profiler capture via console command."""
+        try:
+            subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            world = subsystem.get_editor_world()
+            unreal.SystemLibrary.execute_console_command(world, "csvprofile start", None)
+            return json.dumps({"status": "success", "result": "CSV profiler started"})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def stop_csv_profile():
+        """Stop CSV profiler capture. Call get_csv_profile after a few seconds to read results."""
+        try:
+            subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+            world = subsystem.get_editor_world()
+            unreal.SystemLibrary.execute_console_command(world, "csvprofile stop", None)
+            return json.dumps({"status": "success", "result": "CSV profiler stopped. Call get_csv_profile to read results."})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @staticmethod
+    def get_csv_profile():
+        """Read and parse the most recent CSV profile. Call after stop_csv_profile."""
+        try:
+            import os, glob
+            import csv as csvmod
+
+            csv_dir = os.path.join(unreal.Paths.project_dir(), 'Saved', 'Profiling', 'CSV')
+            if not os.path.exists(csv_dir):
+                return json.dumps({"status": "error", "message": "CSV profiling directory not found"})
+
+            csv_files = glob.glob(os.path.join(csv_dir, 'Profile*.csv'))
+            if not csv_files:
+                return json.dumps({"status": "error", "message": "No CSV profile files found"})
+
+            latest = max(csv_files, key=os.path.getmtime)
+
+            with open(latest, 'r') as f:
+                reader = csvmod.reader(f)
+                header = next(reader)
+                rows = list(reader)
+
+            if not rows:
+                return json.dumps({"status": "error", "message": "CSV profile is empty"})
+
+            # Build column index map
+            col = {name.strip(): i for i, name in enumerate(header)}
+
+            def get_col_values(col_name):
+                """Get float values for a column, skipping empty/invalid."""
+                idx = col.get(col_name)
+                if idx is None:
+                    return []
+                vals = []
+                for row in rows:
+                    if idx < len(row) and row[idx].strip():
+                        try:
+                            v = float(row[idx])
+                            if v > 0 and v < 10000:  # filter bogus values
+                                vals.append(v)
+                        except ValueError:
+                            pass
+                return vals
+
+            def summarize(values):
+                """Return stats dict for a list of float values."""
+                if not values:
+                    return None
+                values_sorted = sorted(values)
+                n = len(values_sorted)
+                return {
+                    "avg": sum(values) / n,
+                    "min": values_sorted[0],
+                    "max": values_sorted[-1],
+                    "p50": values_sorted[int(n * 0.5)],
+                    "p95": values_sorted[min(int(n * 0.95), n - 1)],
+                    "p99": values_sorted[min(int(n * 0.99), n - 1)],
+                }
+
+            # Key timing columns (values are in ms)
+            timing_cols = ['FrameTime', 'GameThreadTime', 'RenderThreadTime',
+                           'GPUTime', 'RHIThreadTime', 'InputLatencyTime']
+            timing_summary = {}
+            for tc in timing_cols:
+                stats = summarize(get_col_values(tc))
+                if stats:
+                    timing_summary[tc] = stats
+
+            # Key counter columns
+            counter_cols = ['RHI/DrawCalls', 'RHI/PrimitivesDrawn',
+                            'MemoryFreeMB', 'PhysicalUsedMB']
+            counter_summary = {}
+            for cc in counter_cols:
+                stats = summarize(get_col_values(cc))
+                if stats:
+                    counter_summary[cc] = stats
+
+            # Budget analysis from FrameTime
+            frame_times = get_col_values('FrameTime')
+            total_frames = len(frame_times)
+            budget = {}
+            if frame_times:
+                over_60 = sum(1 for ft in frame_times if ft > 16.67)
+                over_30 = sum(1 for ft in frame_times if ft > 33.33)
+                budget = {
+                    "total_frames": total_frames,
+                    "frames_over_60fps": over_60,
+                    "pct_over_60fps": round(over_60 / total_frames * 100, 1),
+                    "frames_over_30fps": over_30,
+                    "pct_over_30fps": round(over_30 / total_frames * 100, 1),
+                }
+                if frame_times:
+                    budget["avg_fps"] = round(1000.0 / (sum(frame_times) / total_frames), 1)
+
+            # Trend analysis: compare first half vs second half
+            trend = {}
+            if len(frame_times) >= 20:
+                mid = len(frame_times) // 2
+                first_avg = sum(frame_times[:mid]) / mid
+                second_avg = sum(frame_times[mid:]) / (len(frame_times) - mid)
+                change_pct = ((second_avg - first_avg) / first_avg) * 100
+                trend = {
+                    "first_half_avg_ms": round(first_avg, 2),
+                    "second_half_avg_ms": round(second_avg, 2),
+                    "change_pct": round(change_pct, 1),
+                    "trending": "stable" if abs(change_pct) < 5 else ("degrading" if change_pct > 0 else "improving"),
+                }
+
+            result = {
+                "csv_file": os.path.abspath(latest),
+                "frame_count": total_frames,
+                "timing": timing_summary,
+                "counters": counter_summary,
+                "budget": budget,
+                "trend": trend,
+            }
+
+            return json.dumps({"status": "success", "result": json.dumps(result)})
+
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e), "traceback": traceback.format_exc()})
+
 # Register the bridge as a global variable
 mcp_bridge = MCPUnrealBridge()

@@ -13,7 +13,7 @@ This is a plugin for Unreal Engine (UE) that creates a server implementation of 
 - Visual Studio 2019 or higher.
 - An AI Agent. Below, we assume Claude will be used. But any AI Agent that implements MCP should suffice.
 - Unreal Engine 5 with the Python Editor Script Plugin enabled.
-- Note the [Unreal Engine Python API](https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.5).
+- Note the [Unreal Engine Python API](https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.7).
 
 ## Installing from GitHub
 
@@ -178,7 +178,43 @@ These tools are defined in `unreal_mcp_client.py` and are available to the AI ag
 | `set_viewport_camera` | `location_x/y/z`, `rotation_pitch/yaw/roll` | Moves the editor viewport camera to a specific location and rotation. Pitch = look up/down, Yaw = compass heading, Roll = tilt. |
 | `focus_viewport_on_actor` | `actor_name`, `distance` | Points the camera at a named actor from a 45-degree overhead angle. Distance is auto-calculated from the actor's bounds, or can be overridden (set to 0 for auto). |
 
-### Performance Tracing & Analysis
+### CSV Profiler (High-Level Performance)
+
+The CSV profiler captures per-frame aggregate stats — frame time, thread times, GPU time, draw calls, memory — without the overhead of a full Insights trace. Use it as a quick health check to identify *which area* has a problem, then follow up with Insights tracing to find the *specific cause*.
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `start_csv_profile` | — | Starts the CSV profiler. Captures per-frame stats for every subsequent frame. |
+| `stop_csv_profile` | — | Stops the CSV profiler. The output CSV file needs a few seconds to finalize before reading. |
+| `get_csv_profile` | — | Reads the most recent CSV profile and returns a parsed JSON summary with timing stats, counters, budget analysis, and trend data. |
+
+**Call order and timing:**
+
+```
+1. start_csv_profile       → profiler begins capturing
+2. [perform actions]       → play in editor, stress test, etc.
+3. stop_csv_profile        → sends the stop command (returns immediately)
+4. [wait 2-3 seconds]      → the CSV profiler writes asynchronously on the game thread;
+                              it needs a few engine ticks to flush the file to disk
+5. get_csv_profile         → reads and parses the CSV, returns the summary
+```
+
+The wait between `stop_csv_profile` and `get_csv_profile` is important. The `csvprofile stop` console command is asynchronous — the engine needs game thread ticks to finalize and close the CSV file. If `get_csv_profile` is called too soon, the file may still be locked. If that happens, simply wait a moment and call `get_csv_profile` again.
+
+**What the summary includes:**
+
+| Section | Contents |
+|---------|----------|
+| **timing** | avg/min/max/p50/p95/p99 for FrameTime, GameThreadTime, RenderThreadTime, GPUTime, RHIThreadTime, InputLatencyTime |
+| **counters** | avg/min/max/p50/p95/p99 for DrawCalls, PrimitivesDrawn, MemoryFreeMB, PhysicalUsedMB |
+| **budget** | Total frames, frames over 60fps/30fps budgets (count + percentage), average FPS |
+| **trend** | First-half vs second-half average frame time, percent change, and label (stable/degrading/improving) |
+
+**Interpreting the results:** Whichever thread time is closest to FrameTime is the bottleneck. If GameThreadTime dominates, the scene is CPU game-bound (too many actors ticking, expensive Blueprint logic). If RenderThreadTime dominates, it's CPU render-bound (too many draw calls, complex scene setup). If GPUTime dominates, it's GPU-bound (heavy shaders, too many triangles, post-processing). The trend section reveals whether performance is steady or degrading over time (e.g., from a memory leak or growing actor count).
+
+### Unreal Insights Tracing (Function-Level Detail)
+
+Insights tracing captures the full call stack — individual function names, source file/line numbers, per-scope timing with nesting. Use it after the CSV profiler identifies which area is the problem, to pinpoint the exact function or Blueprint causing it.
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -192,7 +228,7 @@ These tools are defined in `unreal_mcp_client.py` and are available to the AI ag
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `execute_python` | `code` | Executes arbitrary Python code inside the Unreal Engine process. This gives the agent access to the full [Unreal Engine Python API](https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.5). Returns printed output and error tracebacks. |
+| `execute_python` | `code` | Executes arbitrary Python code inside the Unreal Engine process. This gives the agent access to the full [Unreal Engine Python API](https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.7). Returns printed output and error tracebacks. |
 
 `execute_python` is the most powerful tool. The agent can import `unreal`, call any editor subsystem, manipulate assets, modify materials, create Blueprints, and run any logic that the UE Python API supports. The other tools are convenience wrappers for common operations that don't require writing Python code.
 
@@ -261,7 +297,7 @@ def create_castle() -> str:
     return f"""
 Please create a castle in the current Unreal Engine project.
 0. Refer to the Unreal Engine Python API when creating new python code:
-   https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.5
+   https://dev.epicgames.com/documentation/en-us/unreal-engine/python-api/?application_version=5.7
 1. Clear all the StaticMeshActors in the scene.
 2. Get the project directory and the content directory.
 3. Find basic shapes to use for building structures.
@@ -337,31 +373,44 @@ Use execute_python with `import unreal` and `unreal.NiagaraEditorLibrary` to:
 
 > Create a Niagara lightning effect with a beam emitter. It should be a jagged blue-white bolt that fires once from (0, 0, 2000) down to (0, 0, 0). Use a Ribbon renderer with JitterPosition for the jagged shape.
 
-### Analyzing Performance with Unreal Insights
+### Analyzing Performance
 
-The agent can capture and analyze performance traces without leaving the conversation. This uses the `TraceAnalysisLibrary` to parse `.utrace` files and extract function-level timing data — the same data visible in the Unreal Insights standalone application.
+The plugin provides two levels of performance analysis that work together:
 
-**Workflow:**
+1. **CSV Profiler** — Quick, high-level dashboard. Answers: "How is overall performance? Which thread is the bottleneck?"
+2. **Unreal Insights** — Deep, function-level detail. Answers: "Which specific function or Blueprint is causing the bottleneck?"
+
+**Recommended workflow — triage then drill down:**
 
 ```
-1. start_trace              → begins capturing CPU/GPU/Frame data to a .utrace file
-2. [perform actions]        → play in editor, stress test, build geometry
-3. stop_trace               → stops capture, returns the .utrace file path
-4. analyze_trace(path, 20)  → returns top 20 most expensive timing scopes with call counts and durations
-5. get_trace_spikes(path)   → finds frames that exceeded the frame budget and shows what caused each spike
-6. get_trace_frame_summary  → frame time percentiles (p50/p90/p95/p99), FPS stats, budget violations
+CSV Profiler (high-level triage):
+  1. start_csv_profile          → begins per-frame stat capture
+  2. [perform actions]          → play in editor, stress test
+  3. stop_csv_profile           → sends stop command
+  4. [wait 2-3 seconds]         → CSV file needs game thread ticks to flush
+  5. get_csv_profile            → parsed summary: timing, counters, budget, trend
+
+Unreal Insights (deep dive, when CSV profiler flags a problem):
+  6. start_trace                → begins detailed .utrace capture
+  7. [reproduce the problem]    → same scenario that CSV profiler flagged
+  8. stop_trace                 → returns .utrace file path
+  9. analyze_trace(path, 20)    → top 20 most expensive functions with call counts and durations
+ 10. get_trace_spikes(path)     → frames that exceeded budget, with per-frame hotspot breakdown
+ 11. get_trace_frame_summary    → frame time percentiles (p50/p90/p95/p99), FPS stats
 ```
 
 **Example prompt for Claude Code** — type directly in the conversation:
 
-> Start a performance trace, wait 10 seconds, stop the trace, then analyze it. Show me the top 20 most expensive functions and any frames that exceeded the 30fps budget.
+> Profile the performance of this scene. Start with a quick CSV profile, then if there are issues, do a detailed Insights trace to find the cause.
 
-**What the analysis returns:**
+**What each level returns:**
 
-- **Per-scope data:** Function name, source file and line number, call count, total/average/max inclusive time in milliseconds
-- **Frame statistics:** Frame count, avg/min/max frame time, average FPS, p50/p90/p95/p99 percentiles
-- **Spike analysis:** Frames exceeding a budget (e.g., 33.33ms for 30fps) with the top contributing scopes per frame
-- **Thread info:** All threads with names and group assignments
+| Level | Data |
+|-------|------|
+| **CSV Profiler** | Per-thread timing (avg/p50/p95/p99), draw calls, memory, FPS, budget violations, trend (stable/degrading/improving) |
+| **Insights: analyze_trace** | Function name, source file/line, call count, total/avg/max inclusive time per scope |
+| **Insights: get_trace_spikes** | Frames exceeding budget with the top contributing scopes per frame |
+| **Insights: get_trace_frame_summary** | Frame count, avg/min/max frame time, FPS, p50/p90/p95/p99 percentiles |
 
 ### Tips for Best Results
 
