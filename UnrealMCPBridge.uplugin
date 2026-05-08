@@ -10,7 +10,7 @@
 	"DocsURL": "https://github.com/appleweed/UnrealMCPBridge",
 	"FabURL": "com.epicgames.launcher://ue/Fab/product/0167ac03-47b5-4a08-b68f-5d54ab7b208e",
 	"SupportURL": "https://github.com/appleweed/UnrealMCPBridge",
-	"EngineVersion": "5.7.0",
+	"EngineVersion": "5.6.0",
 	"CanContainContent": true,
 	"Installed": true,
 	"Modules": [
