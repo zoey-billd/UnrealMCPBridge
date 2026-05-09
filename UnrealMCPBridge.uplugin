@@ -1,0 +1,36 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.6",
+	"FriendlyName": "UnrealMCPBridge",
+	"Description": "Implements Model Context Protocol allowing AI agents access to the editor's Python API.",
+	"Category": "Programming",
+	"CreatedBy": "Omar Abdelwahed",
+	"CreatedByURL": "https://agentdisco.com/",
+	"DocsURL": "https://github.com/appleweed/UnrealMCPBridge",
+	"FabURL": "com.epicgames.launcher://ue/Fab/product/0167ac03-47b5-4a08-b68f-5d54ab7b208e",
+	"SupportURL": "https://github.com/appleweed/UnrealMCPBridge",
+	"EngineVersion": "5.6.0",
+	"CanContainContent": true,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "UnrealMCPBridge",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "Niagara",
+			"Enabled": true
+		}
+	]
+}
