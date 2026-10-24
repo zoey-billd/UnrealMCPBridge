@@ -7,6 +7,97 @@
 
 Model Context Protocol (MCP) bridge plugin for Unreal Engine 5.6+. Gives AI agents — like [Claude](https://claude.ai), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/overview), and other MCP-compatible clients — direct access to the full Unreal Engine Python API through a local TCP socket server.
 
+> **This fork:** adapted for **UE 5.6.0**, and extended with **[`PCGMCP/`](PCGMCP/)** — a second, Python-native MCP path purpose-built for **PCG (Procedural Content Generation) work**, added after real production use surfaced reliability issues in the C++ path under 5.6. See [What's New in This Fork](#whats-new-in-this-fork) below.
+
+## What's New in This Fork
+
+### 1. UE 5.6 adaptation
+
+`EngineVersion` bumped to **5.6.0**. The C++ module compiles and loads unchanged on 5.6 (Win64, Development Editor).
+
+### 2. Reliability findings on the C++ path — why a second path exists
+
+Driving real PCG production graphs through the C++ bridge on 5.6 surfaced structural issues:
+
+- **Blocking synchronous model.** The socket thread waits on the game-thread task (`WaitUntilTaskCompletes`). When the editor is busy — PCG regen, PIE, a modal dialog — tool calls stall or time out.
+- **PCG generation is asynchronous.** A tool call returns long before generation finishes, so instance counts read as 0 or stale. Without a polling discipline this is trivially misdiagnosed ("the graph generates nothing").
+- Manual toolbar start, single client, and it requires a C++ project + Visual Studio.
+
+### 3. NEW — `PCGMCP/`: a Python-native MCP path for PCG (recommended)
+
+No C++ compilation, no editor changes — works with Blueprint-only projects and Launcher (binary) engine builds.
+
+```
+AI agent (any MCP client)
+   ↕  MCP stdio
+pcg_mcp_server.py                 ← adapter process, outside the editor
+   ↕  one-shot TCP: {"code": "<python>"} → {"result": "<stdout>"}
+Editor bridge (auto-started)      ← ~60 lines in Content/Python, executes
+                                     payloads on the game thread via a
+                                     Slate post-tick callback
+```
+
+**Install**
+
+1. Paste the bridge block from [`PCGMCP/pcg_bridge_server.py`](PCGMCP/pcg_bridge_server.py) into your project's `Content/Python/init_unreal.py` — the Python Editor Script Plugin auto-executes it at editor startup.
+2. Install the MCP package on the machine where your AI client runs:
+   ```bash
+   pip install mcp
+   ```
+3. Register the server with any MCP-compatible client (Claude Desktop / Claude Code / Cursor / Trae …):
+   ```json
+   {
+     "mcpServers": {
+       "pcg-bridge": {
+         "command": "python",
+         "args": ["C:/path/to/PCGMCP/pcg_mcp_server.py"],
+         "env": { "PCG_BRIDGE_PORT": "9877" }
+       }
+     }
+   }
+   ```
+
+**Tools (12)**
+
+| Tool | Purpose |
+|------|---------|
+| `ping` | Editor alive? Current map + PCG volume count |
+| `list_pcg_volumes` | Every PCGVolume: exact actor name, graph path, trigger mode, instance totals |
+| `dump_graph` | Node topology of a graph asset — type / enabled / per-pin edge counts |
+| `get_node_settings` | Read specific editor properties off a node's settings object |
+| `get_volume_status` | Generation state + per-mesh instance counts of a volume |
+| `backup_asset` | Timestamped duplicate of an asset — do this before every edit |
+| `save_asset` | Clear the read-only bit → save → verify the on-disk mtime actually changed |
+| `set_node_property` | `set_editor_property` + immediate read-back verification |
+| `regen_volume` | Submit exactly one `generate(force=True)`, then poll until instance counts stabilize |
+| `run_python` | Escape hatch — arbitrary Python, wrapped in the same discipline |
+| `snapshot_instances` | Label and store a volume's per-mesh instance counts |
+| `diff_instances` | A/B diff between two snapshots (area-based acceptance) |
+
+**Production discipline baked in** — not conventions to remember; the tools enforce them:
+
+- `regen_volume` submits **one** generate request, then the adapter polls instance counts until stable. PCG editor generation is async — reading immediately gives false zeros, and stacking multiple regen requests pegs a core in a regenerate loop.
+- `backup_asset` before edits; `save_asset` clears the read-only bit (Perforce) and **verifies the on-disk mtime changed** — an API "success" without a disk write is a real failure mode.
+- Every payload is exception-guarded, prints state **before** risky calls (the bridge returns stdout only — stderr tracebacks are invisible), and ends with `gc.collect()` (delayed GC of stale struct wrappers has crashed editors).
+- One-shot connections; one graph loaded per call (bulk-loading PCG graphs overflows editor memory).
+
+Developed against a real PCG production pipeline — a 43-node forest-ecosystem graph family with river-avoidance, understory and riverbank subsystems (40k+ instanced meshes) — so the discipline list above is earned, not aspirational.
+
+---
+
+## 中文说明
+
+本 fork 做了两件事：
+
+1. **UE 5.6 适配** —— `.uplugin` 引擎版本升至 5.6.0，C++ 模块零改动，5.6 下正常编译加载。
+2. **新增 `PCGMCP/` 纯 Python MCP 路线** —— 用 C++ 路线驱动真实 PCG 生产图时发现结构性问题：同步阻塞模型在编辑器繁忙时挂起；PCG 异步生成导致立即读数误判为 0；且需要 C++ 工程与手动启动。新路线改为：编辑器内约 60 行 TCP 桥（随编辑器自动启动，负载经 Slate post-tick 在主线程执行，socket 线程不阻塞）+ 编辑器外 MCP 适配层，暴露 12 个 PCG 专用工具（拓扑审计 / 参数读写 / 备份保存 / 异步重生成轮询 / 实例快照与 A/B 对比），并把生产纪律直接内置在工具里。无需编译 C++，蓝图工程与 Launcher 版引擎均可使用。
+
+安装步骤与工具表见上方英文章节。
+
+---
+
+The rest of this README documents the original C++ plugin path.
+
 ## Use Cases
 
 - AI-assisted level design, asset management, and scene construction
@@ -64,6 +155,9 @@ UnrealMCPBridge/
 │   └── unreal_server_init.py            # Server-side tool implementations
 ├── MCPClient/
 │   └── unreal_mcp_client.py             # MCP client (Claude Desktop / Claude Code)
+├── PCGMCP/                              # NEW — Python-native path for PCG work
+│   ├── pcg_bridge_server.py             # Editor-side TCP bridge (auto-start, port 9877)
+│   └── pcg_mcp_server.py                # MCP adapter with 12 PCG-focused tools
 └── UnrealMCPBridge.uplugin
 ```
 
@@ -362,12 +456,15 @@ Restart Claude (or use `/mcp` to reconnect in Claude Code) for new prompts to ap
 | Timeout on tool call | The UE bridge socket timed out. Check that UE is running and the bridge is started. Restart the bridge. |
 | Blueprint/Niagara changes not appearing | Close the asset editor first. The editor caches the asset and won't reflect external Python changes. |
 | CSV profiler returns empty/partial data | Wait 2–3 seconds between `stop_csv_profile` and `get_csv_profile`. The CSV file writes asynchronously on the game thread. |
+| PCGMCP: bridge unreachable | Check the editor Output Log for `UE bridge auto-started on port 9877`. One port per running editor — two open editors will race for connections. |
+| PCGMCP: 0 instances right after a change | Expected mid-generation; PCG generation is async. `regen_volume` already polls to stable — don't call `generate` in a loop. |
 
 ---
 
 ## Compatibility
 
 - **Unreal Engine:** 5.6+ (Editor, Win64)
+- **PCGMCP path (new):** UE 5.6+, any project type (C++ **or** Blueprint-only), Launcher or source builds — no compilation required
 - **Python:** 3.11+
 - **MCP Protocol:** 2025-03-26
 
@@ -378,6 +475,7 @@ The plugin has been tested with Claude Desktop and Claude Code. It should work w
 - **Original author:** Omar Abdelwahed ([agentdisco.com](https://agentdisco.com/))
 - **Original repo:** [appleweed/UnrealMCPBridge](https://github.com/appleweed/UnrealMCPBridge)
 - **License:** MIT
+- **Fork maintenance & PCGMCP path:** [zoey-billd](https://github.com/zoey-billd)
 
 ---
 
